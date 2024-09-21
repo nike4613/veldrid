@@ -20,7 +20,7 @@ namespace Veldrid.Vulkan2
             out VkVersion apiVersion,
             out List<FixedUtf8String> surfaceExtensions,
             out delegate*unmanaged<VkPhysicalDevice, void*, void> getPhysicalDeviceProperties2,
-            out VkDebugReportCallbackCreateInfoEXT debugCallbackHandle,
+            out VkDebugReportCallbackEXT debugCallbackHandle,
             out bool hasDebugReportExt,
             out bool hasStdValidation,
             out bool hasKhrValidation)
@@ -154,7 +154,7 @@ namespace Veldrid.Vulkan2
                     var vkGetPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"u8);
                     if (vkGetPhysicalDeviceProperties2 is null)
                     {
-                        vkGetPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"u8);
+                        vkGetPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2KHR"u8);
                     }
 
                     getPhysicalDeviceProperties2 = (delegate* unmanaged<VkPhysicalDevice, void*, void>)vkGetPhysicalDeviceProperties2;
@@ -173,7 +173,7 @@ namespace Veldrid.Vulkan2
                             VkDebugReportFlagsEXT.VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT |
                             VkDebugReportFlagsEXT.VK_DEBUG_REPORT_DEBUG_BIT_EXT;
                     }
-                    InstallDebugCallback(instance, flags);
+                    debugCallbackHandle = InstallDebugCallback(instance, flags);
                 }
 
                 return instance;

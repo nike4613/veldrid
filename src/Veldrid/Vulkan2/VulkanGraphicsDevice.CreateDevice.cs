@@ -17,6 +17,7 @@ namespace Veldrid.Vulkan2
         public static VulkanGraphicsDevice CreateDevice(GraphicsDeviceOptions gdOpts, VulkanDeviceOptions vkOpts, SwapchainDescription? swapchainDesc)
         {
             var instance = VkInstance.NULL;
+            var debugCallbackHandle = VkDebugReportCallbackEXT.NULL;
             var surface = VkSurfaceKHR.NULL;
 
             try
@@ -25,7 +26,7 @@ namespace Veldrid.Vulkan2
                     out var apiVersion,
                     out var surfaceExtensionList,
                     out var vkGetPhysicalDeviceProperties2,
-                    out var debugCallbackHandle,
+                    out debugCallbackHandle,
                     out var hasDebugReportExt,
                     out var hasStdValidation,
                     out var hasKhrValidation);
@@ -36,6 +37,8 @@ namespace Veldrid.Vulkan2
                 }
 
                 var physicalDevice = SelectPhysicalDevice(instance, out var physicalDeviceProps);
+
+                throw new NotImplementedException();
             }
             finally
             {
@@ -44,6 +47,14 @@ namespace Veldrid.Vulkan2
                 if (surface != VkSurfaceKHR.NULL)
                 {
                     vkDestroySurfaceKHR(instance, surface, null);
+                }
+
+                if (debugCallbackHandle != VkDebugReportCallbackEXT.NULL)
+                {
+                    var vkDestroyDebugReportCallbackEXT =
+                        (delegate* unmanaged<VkInstance, VkDebugReportCallbackEXT, VkAllocationCallbacks*, void>)
+                        GetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"u8);
+                    vkDestroyDebugReportCallbackEXT(instance, debugCallbackHandle, null);
                 }
 
                 if (instance != VkInstance.NULL)
