@@ -10,6 +10,9 @@ namespace Veldrid.Vulkan
 {
     internal unsafe static class VulkanUtil
     {
+        [ThreadStatic]
+        private static Exception? _threadDebugCallbackException;
+
         public static void CheckResult(VkResult result)
         {
             if (result != VkResult.VK_SUCCESS)
@@ -18,10 +21,24 @@ namespace Veldrid.Vulkan
             }
         }
 
+        public static void SetDebugCallbackException(Exception exception)
+        {
+            if (_threadDebugCallbackException is { } exc)
+            {
+                exception = new AggregateException([exc, exception]).Flatten();
+            }
+            _threadDebugCallbackException = exception;
+        }
+
         public static void ThrowResult(VkResult result)
         {
-            if (result == VkResult.VK_ERROR_OUT_OF_DEVICE_MEMORY ||
-                result == VkResult.VK_ERROR_OUT_OF_HOST_MEMORY)
+            if (_threadDebugCallbackException is { } exc)
+            {
+                _threadDebugCallbackException = null;
+                throw exc;
+            }
+
+            if (result is VkResult.VK_ERROR_OUT_OF_DEVICE_MEMORY or VkResult.VK_ERROR_OUT_OF_HOST_MEMORY)
             {
                 throw new VeldridOutOfMemoryException(GetExceptionMessage(result));
             }

@@ -6,6 +6,7 @@ namespace Veldrid.Vulkan
 {
     internal sealed unsafe class FixedUtf8String : IDisposable
     {
+        private string? _lazyString;
         private IntPtr _handle;
         private int _numBytes;
 
@@ -26,7 +27,13 @@ namespace Veldrid.Vulkan
             StringPtr[encodedCount] = 0;
         }
 
-        public override string ToString() => Util.UTF8.GetString(StringPtr, _numBytes - 1); // Exclude null terminator
+        public FixedUtf8String(string str) : this(str.AsSpan())
+        {
+            ArgumentNullException.ThrowIfNull(str);
+            _lazyString = str;
+        }
+
+        public override string ToString() => _lazyString ??= Util.UTF8.GetString(StringPtr, _numBytes - 1); // Exclude null terminator
 
         public static implicit operator byte*(FixedUtf8String utf8String) => utf8String.StringPtr;
         public static implicit operator sbyte*(FixedUtf8String utf8String) => (sbyte*)utf8String.StringPtr;
