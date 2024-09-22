@@ -31,7 +31,7 @@ namespace Veldrid.Vulkan2
             public VkInstance Instance;
             public VkDebugReportCallbackEXT DebugCallbackHandle;
             public VkSurfaceKHR Surface;
-            public VkDevice LogicalDevice;
+            public VkDevice Device;
 
             // VkInstance extra information
             public VkVersion ApiVersion;
@@ -77,17 +77,17 @@ namespace Veldrid.Vulkan2
 
                 dcs.QueueFamilyInfo = IdentifyQueueFamilies(dcs.PhysicalDevice, dcs.Surface);
 
-                dcs.LogicalDevice = CreateLogicalDevice(ref dcs);
+                dcs.Device = CreateLogicalDevice(ref dcs);
 
-                throw new NotImplementedException();
+                return new VulkanGraphicsDevice(ref dcs);
             }
             finally
             {
                 // if we reach here with non-NULL locals, then an error occurred and we should be good API users and clean up
 
-                if (dcs.LogicalDevice != VkDevice.NULL)
+                if (dcs.Device != VkDevice.NULL)
                 {
-                    vkDestroyDevice(dcs.LogicalDevice, null);
+                    vkDestroyDevice(dcs.Device, null);
                 }
 
                 if (dcs.Surface != VkSurfaceKHR.NULL)

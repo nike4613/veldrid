@@ -12,56 +12,141 @@ using VkVersion = Veldrid.Vulkan.VkVersion;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using System.Net;
 
 namespace Veldrid.Vulkan2
 {
-    internal unsafe sealed partial class VulkanGraphicsDevice : GraphicsDevice
+    internal sealed partial class VulkanGraphicsDevice : GraphicsDevice
     {
+        private readonly DeviceCreateState _deviceCreateState;
 
-        private static delegate* unmanaged<void> GetInstanceProcAddr(VkInstance instance, ReadOnlySpan<byte> name)
+        // optional functions
+
+        // debug marker ext
+        private readonly unsafe delegate* unmanaged<VkDevice, VkDebugMarkerObjectNameInfoEXT*, VkResult> vkDebugMarkerSetObjectNameEXT;
+        private readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerBeginEXT;
+        private readonly unsafe delegate* unmanaged<VkCommandBuffer, void> vkCmdDebugMarkerEndEXT;
+        private readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerInsertEXT;
+        // dedicated allocation and memreq2
+        private readonly unsafe delegate* unmanaged<VkDevice, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetBufferMemoryRequirements2;
+        private readonly unsafe delegate* unmanaged<VkDevice, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetImageMemoryRequirements2;
+
+        public string? DriverName { get; }
+        public string? DriverInfo { get; }
+
+        private unsafe VulkanGraphicsDevice(ref DeviceCreateState deviceCreateState)
         {
-            fixed (byte* pName = name)
+            // once we adopt the DCS, default-out the source because the caller will try to free the handles (which we now own)
+            _deviceCreateState = deviceCreateState;
+            deviceCreateState = default;
+
+            // Populate knowns based on the fact that this is a Vulkan implementation
+            BackendType = GraphicsBackend.Vulkan;
+            IsUvOriginTopLeft = true;
+            IsDepthRangeZeroToOne = true;
+            IsClipSpaceYInverted = true;
+            ApiVersion = new(
+                (int)_deviceCreateState.ApiVersion.Major,
+                (int)_deviceCreateState.ApiVersion.Minor,
+                (int)_deviceCreateState.ApiVersion.Patch, 0);
+
+            // Then stuff out of the physical device properties
+            UniformBufferMinOffsetAlignment = (uint)_deviceCreateState.PhysicalDeviceProperties.limits.minUniformBufferOffsetAlignment;
+            StructuredBufferMinOffsetAlignment = (uint)_deviceCreateState.PhysicalDeviceProperties.limits.minStorageBufferOffsetAlignment;
+            DeviceName = Util.GetString(_deviceCreateState.PhysicalDeviceProperties.deviceName);
+
+            // Then driver properties (if available)
+            if (_deviceCreateState.HasDriverPropertiesExt)
             {
-                if (pName[name.Length] != 0)
+                var vkGetPhysicalDeviceProperties2 =
+                    (delegate* unmanaged<VkPhysicalDevice, void*, void>)
+                    GetInstanceProcAddr("vkGetPhysicalDeviceProperties2"u8, "vkGetPhysicalDeviceProperties2KHR"u8);
+
+                if (vkGetPhysicalDeviceProperties2 is not null)
                 {
-                    return RetryWithPooledNullTerminator(instance, name);
-
-                    [MethodImpl(MethodImplOptions.NoInlining)]
-                    static delegate* unmanaged<void> RetryWithPooledNullTerminator(VkInstance instance, ReadOnlySpan<byte> name)
+                    var driverProps = new VkPhysicalDeviceDriverProperties()
                     {
-                        var arr = ArrayPool<byte>.Shared.Rent(name.Length + 1);
-                        name.CopyTo(arr);
-                        arr[name.Length] = 0;
-                        var result =  GetInstanceProcAddr(instance, arr.AsSpan(0, name.Length));
-                        ArrayPool<byte>.Shared.Return(arr);
-                        return result;
-                    }
-                }
+                        sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+                    };
+                    var deviceProps = new VkPhysicalDeviceProperties2()
+                    {
+                        sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                        pNext = &driverProps,
+                    };
+                    vkGetPhysicalDeviceProperties2(_deviceCreateState.PhysicalDevice, &deviceProps);
 
-                return vkGetInstanceProcAddr(instance, (sbyte*)pName);
+                    DriverName = Util.GetString(driverProps.driverName);
+                    DriverInfo = Util.GetString(driverProps.driverInfo);
+
+                    ApiVersion = new(
+                        driverProps.conformanceVersion.major,
+                        driverProps.conformanceVersion.minor,
+                        driverProps.conformanceVersion.subminor,
+                        driverProps.conformanceVersion.patch);
+                }
             }
-        }
-        private static delegate* unmanaged<void> GetDeviceProcAddr(VkDevice device, ReadOnlySpan<byte> name)
-        {
-            fixed (byte* pName = name)
+
+            // Then several optional extension functions
+            if (_deviceCreateState.HasDebugMarkerExt)
             {
-                if (pName[name.Length] != 0)
-                {
-                    return RetryWithPooledNullTerminator(device, name);
+                vkDebugMarkerSetObjectNameEXT =
+                    (delegate* unmanaged<VkDevice, VkDebugMarkerObjectNameInfoEXT*, VkResult>)GetInstanceProcAddr("vkDebugMarkerSetObjectNameEXT"u8);
+                vkCmdDebugMarkerBeginEXT =
+                    (delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void>)GetInstanceProcAddr("vkCmdDebugMarkerBeginEXT"u8);
+                vkCmdDebugMarkerEndEXT =
+                    (delegate* unmanaged<VkCommandBuffer, void>)GetInstanceProcAddr("vkCmdDebugMarkerEndEXT"u8);
+                vkCmdDebugMarkerInsertEXT =
+                    (delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void>)GetInstanceProcAddr("vkCmdDebugMarkerInsertEXT"u8);
+            }
 
-                    [MethodImpl(MethodImplOptions.NoInlining)]
-                    static delegate* unmanaged<void> RetryWithPooledNullTerminator(VkDevice instance, ReadOnlySpan<byte> name)
-                    {
-                        var arr = ArrayPool<byte>.Shared.Rent(name.Length + 1);
-                        name.CopyTo(arr);
-                        arr[name.Length] = 0;
-                        var result = GetDeviceProcAddr(instance, arr.AsSpan(0, name.Length));
-                        ArrayPool<byte>.Shared.Return(arr);
-                        return result;
-                    }
-                }
+            if (_deviceCreateState.HasDedicatedAllocationExt && _deviceCreateState.HasMemReqs2Ext)
+            {
+                vkGetBufferMemoryRequirements2 =
+                    (delegate* unmanaged<VkDevice, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*, void>)
+                    GetDeviceProcAddr("vkGetBufferMemoryRequirements2"u8, "vkGetBufferMemoryRequirements2KHR"u8);
+                vkGetImageMemoryRequirements2 =
+                    (delegate* unmanaged<VkDevice, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*, void>)
+                    GetDeviceProcAddr("vkGetImageMemoryRequirements2"u8, "vkGetImageMemoryRequirements2KHR"u8);
+            }
 
-                return vkGetDeviceProcAddr(device, (sbyte*)pName);
+            throw new NotImplementedException();
+
+        }
+
+        private bool _disposed;
+
+        protected override unsafe void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+
+            if (_disposed) return;
+            _disposed = true;
+
+            // TODO: destroy all other associated information
+
+            var dcs = _deviceCreateState;
+
+            if (dcs.Device != VkDevice.NULL)
+            {
+                vkDestroyDevice(dcs.Device, null);
+            }
+
+            if (dcs.Surface != VkSurfaceKHR.NULL)
+            {
+                vkDestroySurfaceKHR(dcs.Instance, dcs.Surface, null);
+            }
+
+            if (dcs.DebugCallbackHandle != VkDebugReportCallbackEXT.NULL)
+            {
+                var vkDestroyDebugReportCallbackEXT =
+                    (delegate* unmanaged<VkInstance, VkDebugReportCallbackEXT, VkAllocationCallbacks*, void>)
+                    GetInstanceProcAddr(dcs.Instance, "vkDestroyDebugReportCallbackEXT"u8);
+                vkDestroyDebugReportCallbackEXT(dcs.Instance, dcs.DebugCallbackHandle, null);
+            }
+
+            if (dcs.Instance != VkInstance.NULL)
+            {
+                vkDestroyInstance(dcs.Instance, null);
             }
         }
 

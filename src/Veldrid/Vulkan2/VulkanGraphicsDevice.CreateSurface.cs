@@ -19,7 +19,6 @@ namespace Veldrid.Vulkan2
 {
     internal unsafe partial class VulkanGraphicsDevice
     {
-
         internal static VkSurfaceKHR CreateSurface(VkInstance instance, List<FixedUtf8String> surfaceExtensions, SwapchainSource swapchainSource)
         {
             HashSet<string> instanceExtensions = new(surfaceExtensions.Select(n => n.ToString()));
