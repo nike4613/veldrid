@@ -17,44 +17,67 @@ namespace Veldrid.Vulkan2
 {
     internal unsafe partial class VulkanGraphicsDevice
     {
+        /// <summary>
+        /// DeviceCreateState holds mutable intermediate state that will be (ultimately) used to construct the final VkGraphicsDevice, without
+        /// having to pass around a huge mess of parameters.
+        /// </summary>
+        private struct DeviceCreateState()
+        {
+            // Inputs
+            public GraphicsDeviceOptions GdOptions;
+            public VulkanDeviceOptions VkOptions;
+
+            // Managed Handles
+            public VkInstance Instance;
+            public VkDebugReportCallbackEXT DebugCallbackHandle;
+            public VkSurfaceKHR Surface;
+            public VkDevice LogicalDevice;
+
+            // VkInstance extra information
+            public VkVersion ApiVersion;
+            public bool HasDeviceProperties2Ext;
+            public bool HasDebugReportExt;
+            public bool HasStdValidationLayer;
+            public bool HasKhrValidationLayer;
+
+            // Physical device information
+            public VkPhysicalDevice PhysicalDevice;
+            public VkPhysicalDeviceProperties PhysicalDeviceProperties;
+            public VkPhysicalDeviceFeatures PhysicalDeviceFeatures;
+            public QueueFamilyProperties QueueFamilyInfo = new();
+
+            // VkDevice auxiliary information
+            public VkQueue MainQueue;
+            public bool HasDebugMarkerExt;
+            public bool HasMaintenance1Ext;
+            public bool HasMemReqs2Ext;
+            public bool HasDedicatedAllocationExt;
+            public bool HasDriverPropertiesExt;
+        }
+
         public static VulkanGraphicsDevice CreateDevice(GraphicsDeviceOptions gdOpts, VulkanDeviceOptions vkOpts, SwapchainDescription? swapchainDesc)
         {
-            var instance = VkInstance.NULL;
-            var debugCallbackHandle = VkDebugReportCallbackEXT.NULL;
-            var surface = VkSurfaceKHR.NULL;
-            var logicalDevice = VkDevice.NULL;
+            var dcs = new DeviceCreateState()
+            {
+                GdOptions = gdOpts,
+                VkOptions = vkOpts,
+            };
 
             try
             {
-                instance = CreateInstance(gdOpts.Debug, vkOpts.InstanceExtensions,
-                    out var apiVersion,
-                    out var surfaceExtensionList,
-                    out var vkGetPhysicalDeviceProperties2,
-                    out debugCallbackHandle,
-                    out var hasDebugReportExt,
-                    out var hasStdValidation,
-                    out var hasKhrValidation);
+                dcs.Instance = CreateInstance(ref dcs, out var surfaceExtensionList);
 
                 if (swapchainDesc is { } swdesc)
                 {
-                    surface = CreateSurface(instance, surfaceExtensionList, swdesc.Source);
+                    dcs.Surface = CreateSurface(dcs.Instance, surfaceExtensionList, swdesc.Source);
                 }
 
-                var physicalDevice = SelectPhysicalDevice(instance, out var physicalDeviceProps);
+                dcs.PhysicalDevice = SelectPhysicalDevice(dcs.Instance, out dcs.PhysicalDeviceProperties);
+                vkGetPhysicalDeviceFeatures(dcs.PhysicalDevice, &dcs.PhysicalDeviceFeatures);
 
-                VkPhysicalDeviceFeatures physicalDeviceFeatures;
-                vkGetPhysicalDeviceFeatures(physicalDevice, &physicalDeviceFeatures);
+                dcs.QueueFamilyInfo = IdentifyQueueFamilies(dcs.PhysicalDevice, dcs.Surface);
 
-                var queueFamilyInfo = IdentifyQueueFamilies(physicalDevice, surface);
-
-                logicalDevice = CreateLogicalDevice(instance, physicalDevice, surface,
-                    physicalDeviceFeatures, queueFamilyInfo, vkOpts,
-                    hasStdValidation, hasKhrValidation,
-                    out var mainQueue,
-                    out var hasDebugMarker,
-                    out var hasMemReqs2,
-                    out var hasDedicatedAllocation,
-                    out var hasDriverProperties);
+                dcs.LogicalDevice = CreateLogicalDevice(ref dcs);
 
                 throw new NotImplementedException();
             }
@@ -62,27 +85,27 @@ namespace Veldrid.Vulkan2
             {
                 // if we reach here with non-NULL locals, then an error occurred and we should be good API users and clean up
 
-                if (logicalDevice != VkDevice.NULL)
+                if (dcs.LogicalDevice != VkDevice.NULL)
                 {
-                    vkDestroyDevice(logicalDevice, null);
+                    vkDestroyDevice(dcs.LogicalDevice, null);
                 }
 
-                if (surface != VkSurfaceKHR.NULL)
+                if (dcs.Surface != VkSurfaceKHR.NULL)
                 {
-                    vkDestroySurfaceKHR(instance, surface, null);
+                    vkDestroySurfaceKHR(dcs.Instance, dcs.Surface, null);
                 }
 
-                if (debugCallbackHandle != VkDebugReportCallbackEXT.NULL)
+                if (dcs.DebugCallbackHandle != VkDebugReportCallbackEXT.NULL)
                 {
                     var vkDestroyDebugReportCallbackEXT =
                         (delegate* unmanaged<VkInstance, VkDebugReportCallbackEXT, VkAllocationCallbacks*, void>)
-                        GetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT"u8);
-                    vkDestroyDebugReportCallbackEXT(instance, debugCallbackHandle, null);
+                        GetInstanceProcAddr(dcs.Instance, "vkDestroyDebugReportCallbackEXT"u8);
+                    vkDestroyDebugReportCallbackEXT(dcs.Instance, dcs.DebugCallbackHandle, null);
                 }
 
-                if (instance != VkInstance.NULL)
+                if (dcs.Instance != VkInstance.NULL)
                 {
-                    vkDestroyInstance(instance, null);
+                    vkDestroyInstance(dcs.Instance, null);
                 }
             }
         }
@@ -198,7 +221,6 @@ namespace Veldrid.Vulkan2
                     props.queueCount--;
                 }
 
-
                 // TODO: identify an async compute family
 
                 // check for early exit (all relevant family indicies have been found
@@ -220,36 +242,27 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        private static VkDevice CreateLogicalDevice(
-            VkInstance instance, VkPhysicalDevice physicalDevice, VkSurfaceKHR optSurface,
-            VkPhysicalDeviceFeatures deviceFeatures, QueueFamilyProperties queueFamilies,
-            VulkanDeviceOptions vkOpts,
-            bool hasStdValidation, bool hasKhrValidation,
-            out VkQueue queue,
-            out bool hasDebugMarker,
-            out bool hasMemReqs2,
-            out bool hasDedicatedAllocation,
-            out bool hasDriverProperties)
+        private static VkDevice CreateLogicalDevice(ref DeviceCreateState dcs)
         {
             // note: at the moment we only actually support outputting to one queue
-            Debug.Assert(queueFamilies.MainGraphicsFamilyIdx >= 0);
-            Debug.Assert(queueFamilies.PresentFamilyIdx is -1 || queueFamilies.MainGraphicsFamilyIdx == queueFamilies.PresentFamilyIdx);
-            Debug.Assert(queueFamilies.MainComputeFamilyIdx is -1 || queueFamilies.MainGraphicsFamilyIdx == queueFamilies.MainComputeFamilyIdx);
+            Debug.Assert(dcs.QueueFamilyInfo.MainGraphicsFamilyIdx >= 0);
+            Debug.Assert(dcs.QueueFamilyInfo.PresentFamilyIdx is -1 || dcs.QueueFamilyInfo.MainGraphicsFamilyIdx == dcs.QueueFamilyInfo.PresentFamilyIdx);
+            Debug.Assert(dcs.QueueFamilyInfo.MainComputeFamilyIdx is -1 || dcs.QueueFamilyInfo.MainGraphicsFamilyIdx == dcs.QueueFamilyInfo.MainComputeFamilyIdx);
             // IF ANY OF THE ABOVE CONDITIONS CHANGE, AND WE BEGIN TO CREATE MULTIPLE QUEUES, vkGetDeviceQueue BELOW MUST ALSO CHANGE
 
             var queuePriority = 1f;
             var queueCreateInfo = new VkDeviceQueueCreateInfo()
             {
                 sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                queueFamilyIndex = (uint)queueFamilies.MainGraphicsFamilyIdx,
+                queueFamilyIndex = (uint)dcs.QueueFamilyInfo.MainGraphicsFamilyIdx,
                 queueCount = 1,
                 pQueuePriorities = &queuePriority,
             };
 
-            var requiredDeviceExtensions = new HashSet<string>(vkOpts.DeviceExtensions ?? []);
+            var requiredDeviceExtensions = new HashSet<string>(dcs.VkOptions.DeviceExtensions ?? []);
 
             uint numDeviceExtensions = 0;
-            VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(physicalDevice, null, &numDeviceExtensions, null));
+            VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(dcs.PhysicalDevice, null, &numDeviceExtensions, null));
             var extensionProps = new VkExtensionProperties[numDeviceExtensions];
             var activeExtensions = new nint[numDeviceExtensions];
             uint activeExtensionCount = 0;
@@ -258,13 +271,13 @@ namespace Veldrid.Vulkan2
             fixed (VkExtensionProperties* pExtensionProps = extensionProps)
             fixed (nint* pActiveExtensions = activeExtensions)
             {
-                VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(physicalDevice, null, &numDeviceExtensions, pExtensionProps));
+                VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(dcs.PhysicalDevice, null, &numDeviceExtensions, pExtensionProps));
 
-                hasMemReqs2 = false;
-                hasDedicatedAllocation = false;
-                hasDriverProperties = false;
-
-                hasDebugMarker = false;
+                dcs.HasMemReqs2Ext = false;
+                dcs.HasMaintenance1Ext = false;
+                dcs.HasDedicatedAllocationExt = false;
+                dcs.HasDriverPropertiesExt = false;
+                dcs.HasDebugMarkerExt = false;
 
                 for (var i = 0; i < numDeviceExtensions; i++)
                 {
@@ -273,22 +286,24 @@ namespace Veldrid.Vulkan2
                     {
                         case "VK_EXT_debug_marker":
                         case "VK_EXT_debug_utils":
-                            hasDebugMarker = true;
+                            dcs.HasDebugMarkerExt = true;
                             goto EnableExtension;
 
                         case "VK_KHR_swapchain":
-                        case "VK_KHR_maintenance1":
                         case "VK_KHR_portability_subset":
                             goto EnableExtension;
 
+                        case "VK_KHR_maintenance1":
+                            dcs.HasMaintenance1Ext = true;
+                            goto EnableExtension;
                         case "VK_KHR_get_memory_requirements2":
-                            hasMemReqs2 = true;
+                            dcs.HasMemReqs2Ext = true;
                             goto EnableExtension;
                         case "VK_KHR_dedicated_allocation":
-                            hasDedicatedAllocation = true;
+                            dcs.HasDedicatedAllocationExt = true;
                             goto EnableExtension;
                         case "VK_KHR_driver_properties":
-                            hasDriverProperties = true;
+                            dcs.HasDriverPropertiesExt = true;
                             goto EnableExtension;
 
                         default:
@@ -316,35 +331,38 @@ namespace Veldrid.Vulkan2
                 }
 
                 StackListNI layerNames = new();
-                if (hasStdValidation)
+                if (dcs.HasStdValidationLayer)
                 {
                     layerNames.Add(CommonStrings.StandardValidationLayerName);
                 }
-                if (hasKhrValidation)
+                if (dcs.HasKhrValidationLayer)
                 {
                     layerNames.Add(CommonStrings.KhronosValidationLayerName);
                 }
 
-                var deviceCreateInfo = new VkDeviceCreateInfo()
+                fixed (VkPhysicalDeviceFeatures* pPhysicalDeviceFeatures = &dcs.PhysicalDeviceFeatures)
                 {
-                    sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                    queueCreateInfoCount = 1,
-                    pQueueCreateInfos = &queueCreateInfo,
+                    var deviceCreateInfo = new VkDeviceCreateInfo()
+                    {
+                        sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                        queueCreateInfoCount = 1,
+                        pQueueCreateInfos = &queueCreateInfo,
 
-                    pEnabledFeatures = &deviceFeatures,
+                        pEnabledFeatures = pPhysicalDeviceFeatures,
 
-                    enabledLayerCount = layerNames.Count,
-                    ppEnabledLayerNames = (sbyte**)layerNames.Data,
+                        enabledLayerCount = layerNames.Count,
+                        ppEnabledLayerNames = (sbyte**)layerNames.Data,
 
-                    enabledExtensionCount = activeExtensionCount,
-                    ppEnabledExtensionNames = (sbyte**)pActiveExtensions,
-                };
+                        enabledExtensionCount = activeExtensionCount,
+                        ppEnabledExtensionNames = (sbyte**)pActiveExtensions,
+                    };
 
-                VulkanUtil.CheckResult(vkCreateDevice(physicalDevice, &deviceCreateInfo, null, &device));
+                    VulkanUtil.CheckResult(vkCreateDevice(dcs.PhysicalDevice, &deviceCreateInfo, null, &device));
+                }
 
                 VkQueue localQueue;
-                vkGetDeviceQueue(device, (uint)queueFamilies.MainGraphicsFamilyIdx, 0, &localQueue);
-                queue = localQueue;
+                vkGetDeviceQueue(device, (uint)dcs.QueueFamilyInfo.MainGraphicsFamilyIdx, 0, &localQueue);
+                dcs.MainQueue = localQueue;
 
                 return device;
             }

@@ -16,14 +16,7 @@ namespace Veldrid.Vulkan2
 {
     internal unsafe partial class VulkanGraphicsDevice
     {
-        private static VkInstance CreateInstance(bool debug, string[]? requiredInstanceExtensionsList,
-            out VkVersion apiVersion,
-            out List<FixedUtf8String> surfaceExtensions,
-            out delegate*unmanaged<VkPhysicalDevice, void*, void> getPhysicalDeviceProperties2,
-            out VkDebugReportCallbackEXT debugCallbackHandle,
-            out bool hasDebugReportExt,
-            out bool hasStdValidation,
-            out bool hasKhrValidation)
+        private static VkInstance CreateInstance(ref DeviceCreateState dcs, out List<FixedUtf8String> surfaceExtensions)
         {
             var availInstanceLayers = GetInstanceLayers();
             var availInstanceExtensions = GetInstanceExtensions();
@@ -40,7 +33,7 @@ namespace Veldrid.Vulkan2
             }
             surfaceExtensions.AddRange(GetSurfaceExtensions(availInstanceExtensions));
 
-            var hasDeviceProperties2 = availInstanceExtensions.Contains(CommonStrings.VK_KHR_get_physical_device_properties2);
+            dcs.HasDeviceProperties2Ext = availInstanceExtensions.Contains(CommonStrings.VK_KHR_get_physical_device_properties2);
 
             // now collect that information into the final list
 
@@ -55,7 +48,7 @@ namespace Veldrid.Vulkan2
                     instanceExtensionPtrs.Add(ext);
                 }
 
-                if (requiredInstanceExtensionsList is not null)
+                if (dcs.VkOptions.InstanceExtensions is { } requiredInstanceExtensionsList)
                 {
                     foreach (var requiredExt in requiredInstanceExtensionsList)
                     {
@@ -74,25 +67,25 @@ namespace Veldrid.Vulkan2
                     }
                 }
 
-                hasDebugReportExt = false;
-                hasStdValidation = false;
-                hasKhrValidation = false;
+                dcs.HasDebugReportExt = false;
+                dcs.HasStdValidationLayer = false;
+                dcs.HasKhrValidationLayer = false;
 
-                if (debug)
+                if (dcs.GdOptions.Debug)
                 {
                     if (availInstanceExtensions.Contains(CommonStrings.VK_EXT_DEBUG_REPORT_EXTENSION_NAME))
                     {
-                        hasDebugReportExt = true;
+                        dcs.HasDebugReportExt = true;
                         instanceExtensionPtrs.Add(CommonStrings.VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
                     }
                     if (availInstanceLayers.Contains(CommonStrings.StandardValidationLayerName))
                     {
-                        hasStdValidation = true;
+                        dcs.HasStdValidationLayer = true;
                         instanceLayerPtrs.Add(CommonStrings.StandardValidationLayerName);
                     }
                     if (availInstanceLayers.Contains(CommonStrings.KhronosValidationLayerName))
                     {
-                        hasKhrValidation = true;
+                        dcs.HasKhrValidationLayer = true;
                         instanceLayerPtrs.Add(CommonStrings.KhronosValidationLayerName);
                     }
                 }
@@ -144,28 +137,15 @@ namespace Veldrid.Vulkan2
                         }
                     }
 
-                    apiVersion = new(appinfo.apiVersion);
-                }
-
-                // if this instance supports deviceProperties2, get the procaddr for it
-                getPhysicalDeviceProperties2 = null;
-                if (hasDeviceProperties2)
-                {
-                    var vkGetPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2"u8);
-                    if (vkGetPhysicalDeviceProperties2 is null)
-                    {
-                        vkGetPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2KHR"u8);
-                    }
-
-                    getPhysicalDeviceProperties2 = (delegate* unmanaged<VkPhysicalDevice, void*, void>)vkGetPhysicalDeviceProperties2;
+                    dcs.ApiVersion = new(appinfo.apiVersion);
                 }
 
                 // if this instance supports debug reporting, configure that
-                debugCallbackHandle = default;
-                if (hasDebugReportExt)
+                dcs.DebugCallbackHandle = default;
+                if (dcs.HasDebugReportExt)
                 {
                     var flags = VkDebugReportFlagsEXT.VK_DEBUG_REPORT_ERROR_BIT_EXT;
-                    if (debug)
+                    if (dcs.GdOptions.Debug)
                     {
                         flags |=
                             VkDebugReportFlagsEXT.VK_DEBUG_REPORT_INFORMATION_BIT_EXT |
@@ -173,7 +153,7 @@ namespace Veldrid.Vulkan2
                             VkDebugReportFlagsEXT.VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT |
                             VkDebugReportFlagsEXT.VK_DEBUG_REPORT_DEBUG_BIT_EXT;
                     }
-                    debugCallbackHandle = InstallDebugCallback(instance, flags);
+                    dcs.DebugCallbackHandle = InstallDebugCallback(instance, flags);
                 }
 
                 return instance;
