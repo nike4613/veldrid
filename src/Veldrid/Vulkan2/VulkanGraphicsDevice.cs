@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -13,7 +14,6 @@ using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
-using System.Net;
 
 namespace Veldrid.Vulkan2
 {
@@ -23,11 +23,15 @@ namespace Veldrid.Vulkan2
 
         private readonly VkDeviceMemoryManager _memoryManager;
         private readonly VulkanDescriptorPoolManager _descriptorPoolManager;
-        private readonly object _queueLock = new();
+        internal readonly object QueueLock = new();
 
-        private readonly VkCommandPool _commandPool;
+        private readonly ConcurrentBag<VkSemaphore> _availableSemaphores = new();
 
         // optional functions
+
+        // synchronization2
+        internal readonly unsafe delegate* unmanaged<VkQueue, uint, VkSubmitInfo2*, VkFence, VkResult> vkQueueSubmit2;
+        internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDependencyInfo*, void> vkCmdPipelineBarrier2;
 
         // debug marker ext
         internal readonly unsafe delegate* unmanaged<VkDevice, VkDebugMarkerObjectNameInfoEXT*, VkResult> vkDebugMarkerSetObjectNameEXT;
@@ -119,6 +123,14 @@ namespace Veldrid.Vulkan2
                         GetDeviceProcAddr("vkGetImageMemoryRequirements2"u8, "vkGetImageMemoryRequirements2KHR"u8);
                 }
 
+                // for sanity, right now we hard-require sync2
+                vkQueueSubmit2 =
+                    (delegate* unmanaged<VkQueue, uint, VkSubmitInfo2*, VkFence, VkResult>)
+                    GetDeviceProcAddr("vkQueueSubmit2"u8, "vkQueueSubmit2KHR"u8);
+                vkCmdPipelineBarrier2 =
+                    (delegate* unmanaged<VkCommandBuffer, VkDependencyInfo*, void>)
+                    GetDeviceProcAddr("vkCmdPipelineBarrier2"u8, "vkCmdPipelineBarrier2KHR"u8);
+
                 // Create other bits and pieces
                 _memoryManager = new(
                     _deviceCreateState.Device,
@@ -150,22 +162,9 @@ namespace Veldrid.Vulkan2
                 ResourceFactory = new VulkanResourceFactory(this);
                 _descriptorPoolManager = new(this);
 
-                _commandPool = CreateCommandPool(this);
-                static VkCommandPool CreateCommandPool(VulkanGraphicsDevice device)
-                {
-                    var commandPoolCreateInfo = new VkCommandPoolCreateInfo()
-                    {
-                        sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                        flags = VkCommandPoolCreateFlags.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                        queueFamilyIndex = (uint)device._deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx,
-                    };
-                    VkCommandPool commandPool;
-                    VulkanUtil.CheckResult(vkCreateCommandPool(device._deviceCreateState.Device, &commandPoolCreateInfo, null, &commandPool));
-                    return commandPool;
-                }
-
                 // TODO: MainSwapchain
 
+                EagerlyAllocateSomeResources();
                 PostDeviceCreated();
             }
             catch
@@ -194,9 +193,9 @@ namespace Veldrid.Vulkan2
 
             var dcs = _deviceCreateState;
 
-            if (_commandPool != VkCommandPool.NULL)
+            while (_availableSemaphores.TryTake(out var semaphore))
             {
-                vkDestroyCommandPool(dcs.Device, _commandPool, null);
+                vkDestroySemaphore(dcs.Device, semaphore, null);
             }
 
             if (_descriptorPoolManager is { } poolManager)
@@ -233,7 +232,86 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        private unsafe void EagerlyAllocateSomeResources()
+        {
+            // eagerly allocate a few semaphores to be usable
+            // semaphores are used for synchronization between command lists
+            // (we use them particularly for the memory sync, as well as being able to associate multiple fences with a submit)
+            var semaphoreCreateInfo = new VkSemaphoreCreateInfo()
+            {
+                sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            };
+            for (var i = 0; i < 4; i++)
+            {
+                VkSemaphore semaphore;
+                VulkanUtil.CheckResult(vkCreateSemaphore(Device, &semaphoreCreateInfo, null, &semaphore));
+                _availableSemaphores.Add(semaphore);
+            }
+        }
+
         public VkDevice Device => _deviceCreateState.Device;
+
+        [SkipLocalsInit]
+        internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<char> name)
+        {
+            if (vkDebugMarkerSetObjectNameEXT is null) return;
+
+            Span<byte> utf8Buffer = stackalloc byte[1024];
+            Util.GetNullTerminatedUtf8(name, ref utf8Buffer);
+            SetDebugMarkerName(type, target, utf8Buffer);
+        }
+
+        internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<byte> nameUtf8)
+        {
+            if (vkDebugMarkerSetObjectNameEXT is null) return;
+
+            fixed (byte* utf8Ptr = nameUtf8)
+            {
+                VkDebugMarkerObjectNameInfoEXT nameInfo = new()
+                {
+                    sType = VK_STRUCTURE_TYPE_DEBUG_MARKER_OBJECT_NAME_INFO_EXT,
+                    objectType = type,
+                    @object = target,
+                    pObjectName = (sbyte*)utf8Ptr
+                };
+
+                VulkanUtil.CheckResult(vkDebugMarkerSetObjectNameEXT(Device, &nameInfo));
+            }
+        }
+
+        internal unsafe VkCommandPool CreateCommandPool()
+        {
+            var commandPoolCreateInfo = new VkCommandPoolCreateInfo()
+            {
+                sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                flags = VkCommandPoolCreateFlags.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                queueFamilyIndex = (uint)_deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx,
+            };
+            VkCommandPool commandPool;
+            VulkanUtil.CheckResult(vkCreateCommandPool(_deviceCreateState.Device, &commandPoolCreateInfo, null, &commandPool));
+            return commandPool;
+        }
+
+        internal unsafe VkSemaphore GetSemaphore()
+        {
+            if (_availableSemaphores.TryTake(out var semaphore))
+            {
+                return semaphore;
+            }
+
+            var semCreateInfo = new VkSemaphoreCreateInfo()
+            {
+                sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            };
+
+            VulkanUtil.CheckResult(vkCreateSemaphore(Device, &semCreateInfo, null, &semaphore));
+            return semaphore;
+        }
+
+        internal void ReturnSemaphore(VkSemaphore semaphore)
+        {
+            _availableSemaphores.Add(semaphore);
+        }
 
         public override TextureSampleCount GetSampleCountLimit(PixelFormat format, bool depthFormat)
         {
@@ -292,7 +370,7 @@ namespace Veldrid.Vulkan2
 
         private protected override void WaitForIdleCore()
         {
-            lock (_queueLock)
+            lock (QueueLock)
             {
                 vkQueueWaitIdle(_deviceCreateState.MainQueue);
             }
