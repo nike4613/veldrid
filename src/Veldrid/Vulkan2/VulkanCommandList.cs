@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
@@ -13,7 +16,7 @@ namespace Veldrid.Vulkan2
 {
     internal unsafe sealed class VulkanCommandList : CommandList, IResourceRefCountTarget
     {
-        private readonly VulkanGraphicsDevice _device;
+        public VulkanGraphicsDevice Device { get; }
         private readonly VkCommandPool _pool;
         public ResourceRefCount RefCount { get; }
 
@@ -39,7 +42,7 @@ namespace Veldrid.Vulkan2
         public VulkanCommandList(VulkanGraphicsDevice device, VkCommandPool pool, in CommandListDescription description)
             : base(description, device.Features, device.UniformBufferMinOffsetAlignment, device.StructuredBufferMinOffsetAlignment)
         {
-            _device = device;
+            Device = device;
             _pool = pool;
             RefCount = new(this);
         }
@@ -51,7 +54,7 @@ namespace Veldrid.Vulkan2
 
         void IResourceRefCountTarget.RefZeroed()
         {
-            vkDestroyCommandPool(_device.Device, _pool, null);
+            vkDestroyCommandPool(Device.Device, _pool, null);
         }
 
         internal readonly struct StagingResourceInfo
@@ -117,7 +120,7 @@ namespace Veldrid.Vulkan2
 
                 fixed (VkCommandBuffer* pBuffers = buffers)
                 {
-                    VulkanUtil.CheckResult(vkAllocateCommandBuffers(_device.Device, &allocateInfo, pBuffers));
+                    VulkanUtil.CheckResult(vkAllocateCommandBuffers(Device.Device, &allocateInfo, pBuffers));
                 }
             }
         }
@@ -153,7 +156,16 @@ namespace Veldrid.Vulkan2
             stagingInfo = default;
         }
 
-        public void SubmitToQueue(VkQueue queue, VulkanFence? submitFence)
+        internal record struct FenceCompletionCallbackInfo(
+            VulkanCommandList CommandList,
+            VkCommandBuffer MainCb,
+            VkCommandBuffer SyncCb,
+            VkSemaphore SyncSemaphore,
+            Action<VulkanCommandList>? OnSubmitCompleted,
+            bool FenceWasRented
+            );
+
+        public void SubmitToQueue(VkQueue queue, VulkanFence? submitFence, Action<VulkanCommandList>? onSubmitCompleted)
         {
             if (!_bufferEnded)
             {
@@ -169,21 +181,28 @@ namespace Veldrid.Vulkan2
             _currentStagingInfo = default;
 
             // now we want to do all of the actual submission work
-            // TODO: extra fences to track queues which have been submitted
-            {
-                var syncToMainSem = _device.GetSemaphore();
+            var syncToMainSem = Device.GetSemaphore();
+            var fence = submitFence is not null ? submitFence.DeviceFence : Device.GetSubmissionFence();
+            var fenceWasRented = submitFence is null;
 
+            if (submitFence is not null)
+            {
+                // if we're to wait on a fence controlled by a VulkanFence, make sure to ref it
+                resourceInfo.AddResource(submitFence.RefCount);
+            }
+
+            {
+                // record the synchronization command buffer first
                 var beginInfo = new VkCommandBufferBeginInfo()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                     flags = VkCommandBufferUsageFlags.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
                 };
                 VulkanUtil.CheckResult(vkBeginCommandBuffer(syncCb, &beginInfo));
-
                 EmitInitialResourceSync(syncCb);
-
                 VulkanUtil.CheckResult(vkEndCommandBuffer(syncCb));
 
+                // then submit everything with just one submission
                 var syncSemaphoreInfo = new VkSemaphoreSubmitInfo()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -221,34 +240,78 @@ namespace Veldrid.Vulkan2
                         pWaitSemaphoreInfos = &syncSemaphoreInfo,
                         commandBufferInfoCount = 1,
                         pCommandBufferInfos = &mainCmdSubmitInfo,
-                        // TODO: optionally signal a semaphore for a 3rd submit so we can signal a second fence (or just use the same fence)
                     },
                 ];
 
-                var fence = submitFence is not null ? submitFence.DeviceFence : VkFence.NULL;
-
                 fixed (VkSubmitInfo2* pSubmitInfos = submitInfos)
                 {
-                    VulkanUtil.CheckResult(_device.vkQueueSubmit2(queue, (uint)submitInfos.Length, pSubmitInfos, fence));
+                    VulkanUtil.CheckResult(Device.vkQueueSubmit2(queue, (uint)submitInfos.Length, pSubmitInfos, fence));
                 }
             }
 
-            // TODO: record the associated fence in the GD so that it can notice when the queue is finished
-
             RefCount.Increment();
+            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, onSubmitCompleted, fenceWasRented));
 
             lock (_commandBufferListLock)
             {
                 // record that we've submitted this command list, and associate the relevant resources
-                // note: we submit default for syncCb because we *also* use this dict as the list of submitted command buffers
+                // note: we don't need to add the syncCb here, because it's part of the FenceCompletionCallbackInfo registered above
                 _submittedStagingInfos.Add(cb, resourceInfo);
-                _submittedStagingInfos.Add(syncCb, default);
+            }
+        }
+
+        internal void OnSubmissionFenceCompleted(VkFence fence, in FenceCompletionCallbackInfo callbackInfo, bool errored)
+        {
+            Debug.Assert(this == callbackInfo.CommandList);
+
+            try
+            {
+                // a submission finished, lets get the associated resource info and remove it from the list
+                StagingResourceInfo resourceInfo;
+                lock (_commandBufferListLock)
+                {
+                    if (!_submittedStagingInfos.Remove(callbackInfo.MainCb, out resourceInfo))
+                    {
+                        if (!errored) ThrowUnreachableStateException();
+                    }
+
+                    // return the command buffers
+                    _availableCommandBuffers.Push(callbackInfo.MainCb);
+                    _availableCommandBuffers.Push(callbackInfo.SyncCb);
+                }
+
+                // reset and return the fence as needed
+                if (callbackInfo.FenceWasRented)
+                {
+                    VulkanUtil.CheckResult(vkResetFences(Device.Device, 1, &fence));
+                    Device.ReturnSubmissionFence(fence);
+                }
+                else
+                {
+                    // if the fence wasn't rented, it's part of a VulkanFence object, and the application may still care about its state
+                }
+
+                // recycle the staging info
+                RecycleStagingInfo(ref resourceInfo);
+
+                // and finally, invoke the callback if it was provided
+                callbackInfo.OnSubmitCompleted?.Invoke(this);
+            }
+            finally
+            {
+                RefCount.Decrement();
             }
         }
 
         private void EmitInitialResourceSync(VkCommandBuffer cb)
         {
             // TODO:
+        }
+
+        [DoesNotReturn]
+        private static void ThrowUnreachableStateException()
+        {
+            throw new Exception("Implementation reached unexpected condition.");
         }
 
         public override void Begin()
