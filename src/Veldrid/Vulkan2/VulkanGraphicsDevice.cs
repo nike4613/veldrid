@@ -442,6 +442,12 @@ namespace Veldrid.Vulkan2
             {
                 result = vkWaitForFences(Device, (uint)fences.Length, pFences, waitAll ? VK_TRUE : VK_FALSE, nanosecondTimeout) == VkResult.VK_SUCCESS;
             }
+
+            if (arr is not null)
+            {
+                ArrayPool<VkFence>.Shared.Return(arr);
+            }
+
             // if we're waiting for fences, they're probably submission fences
             CheckFencesForCompletion();
 
