@@ -267,6 +267,8 @@ namespace Veldrid.Vulkan2
 
         public VkDevice Device => _deviceCreateState.Device;
 
+        public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
+
         [SkipLocalsInit]
         internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<char> name)
         {
@@ -405,6 +407,28 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        private protected override void SubmitCommandsCore(CommandList commandList, Fence? fence)
+        {
+            var cl = Util.AssertSubtype<CommandList, VulkanCommandList>(commandList);
+            var vkFence = Util.AssertSubtypeOrNull<Fence, VulkanFence>(fence);
+
+            lock (QueueLock)
+            {
+                cl.SubmitToQueue(_deviceCreateState.MainQueue, vkFence, null);
+            }
+        }
+
+        private protected override void WaitForIdleCore()
+        {
+            lock (QueueLock)
+            {
+                vkQueueWaitIdle(_deviceCreateState.MainQueue);
+            }
+
+            // when the queue has gone idle, all of our fences *should* be signalled.
+            // Make sure we clean up their associated information.
+            CheckFencesForCompletion();
+        }
 
         public override unsafe void ResetFence(Fence fence)
         {
@@ -469,11 +493,6 @@ namespace Veldrid.Vulkan2
             throw new NotImplementedException();
         }
 
-        private protected override void SubmitCommandsCore(CommandList commandList, Fence? fence)
-        {
-            throw new NotImplementedException();
-        }
-
         private protected override void SwapBuffersCore(Swapchain swapchain)
         {
             throw new NotImplementedException();
@@ -492,16 +511,6 @@ namespace Veldrid.Vulkan2
         private protected override void UpdateTextureCore(Texture texture, nint source, uint sizeInBytes, uint x, uint y, uint z, uint width, uint height, uint depth, uint mipLevel, uint arrayLayer)
         {
             throw new NotImplementedException();
-        }
-
-        private protected override void WaitForIdleCore()
-        {
-            lock (QueueLock)
-            {
-                vkQueueWaitIdle(_deviceCreateState.MainQueue);
-            }
-
-            // TODO: CheckSubmittedFences()
         }
     }
 }

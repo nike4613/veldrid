@@ -19,8 +19,7 @@ namespace Veldrid.Vulkan2
         public VulkanGraphicsDevice Device { get; }
         private readonly VkCommandPool _pool;
         public ResourceRefCount RefCount { get; }
-
-        public override string? Name { get; set; }
+        private string? _name;
 
         // Persistent reuse fields
         private readonly object _commandBufferListLock = new();
@@ -85,6 +84,35 @@ namespace Veldrid.Vulkan2
                 //BuffersUsed.Clear();
                 //TexturesUsed.Clear();
                 Resources.Clear();
+            }
+        }
+
+        public override string? Name
+        {
+            get => _name;
+            set
+            {
+                _name = value;
+                // TODO: staging buffer name?
+                UpdateBufferNames(value);
+            }
+        }
+
+        private void UpdateBufferNames(string? name)
+        {
+            if (Device.HasSetMarkerName)
+            {
+                if (_currentCb != VkCommandBuffer.NULL)
+                {
+                    Device.SetDebugMarkerName(VkDebugReportObjectTypeEXT.VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT,
+                        (ulong)_currentCb.Value, name);
+                }
+
+                if (_syncCb != VkCommandBuffer.NULL)
+                {
+                    Device.SetDebugMarkerName(VkDebugReportObjectTypeEXT.VK_DEBUG_REPORT_OBJECT_TYPE_COMMAND_BUFFER_EXT,
+                    (ulong)_syncCb.Value, name + " (synchronization)");
+                }
             }
         }
 
@@ -346,6 +374,8 @@ namespace Veldrid.Vulkan2
                 GetNextCommandBuffers(requestedBuffers);
                 _currentCb = requestedBuffers[0];
                 _syncCb = requestedBuffers[1];
+
+                UpdateBufferNames(Name);
             }
 
             ClearCachedState();

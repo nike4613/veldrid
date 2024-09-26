@@ -28,6 +28,22 @@ namespace Veldrid
 #endif
         }
 
+        [DebuggerNonUserCode]
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        [return: NotNullIfNotNull(nameof(value))]
+        internal static TDerived? AssertSubtypeOrNull<TBase, TDerived>(TBase? value)
+            where TBase : class
+            where TDerived : class, TBase
+        {
+#if DEBUG
+            if (value is not null and not TDerived)
+            {
+                throw new VeldridException($"object {value} must be null or derived type {typeof(TDerived).FullName} to be used in this context.");
+            }
+#endif
+            return (TDerived?)value;
+        }
+
         internal static void EnsureArrayMinimumSize<T>(ref T[] array, uint size)
         {
             if (array == null || array.Length < size)
