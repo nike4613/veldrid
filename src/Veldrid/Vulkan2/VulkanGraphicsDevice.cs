@@ -29,6 +29,9 @@ namespace Veldrid.Vulkan2
         private readonly ConcurrentBag<VkSemaphore> _availableSemaphores = new();
         private readonly ConcurrentBag<VkFence> _availableSubmissionFences = new();
 
+        private const int MaxSharedCommandLists = 8;
+        private readonly ConcurrentBag<VulkanCommandList> _sharedCommandLists = new();
+
         private readonly object _fenceCompletionCallbackLock = new();
         private readonly List<FenceCompletionCallbackInfo> _fenceCompletionCallbacks = new();
 
@@ -198,9 +201,19 @@ namespace Veldrid.Vulkan2
 
             var dcs = _deviceCreateState;
 
+            while (_sharedCommandLists.TryTake(out var cl))
+            {
+                cl.Dispose();
+            }
+
             while (_availableSemaphores.TryTake(out var semaphore))
             {
                 vkDestroySemaphore(dcs.Device, semaphore, null);
+            }
+
+            while (_availableSubmissionFences.TryTake(out var fence))
+            {
+                vkDestroyFence(dcs.Device, fence, null);
             }
 
             if (_descriptorPoolManager is { } poolManager)
@@ -297,7 +310,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        internal unsafe VkCommandPool CreateCommandPool()
+        internal unsafe VkCommandPool CreateCommandPool(bool transient)
         {
             var commandPoolCreateInfo = new VkCommandPoolCreateInfo()
             {
@@ -305,6 +318,12 @@ namespace Veldrid.Vulkan2
                 flags = VkCommandPoolCreateFlags.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                 queueFamilyIndex = (uint)_deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx,
             };
+
+            if (transient)
+            {
+                commandPoolCreateInfo.flags |= VkCommandPoolCreateFlags.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+            }
+
             VkCommandPool commandPool;
             VulkanUtil.CheckResult(vkCreateCommandPool(_deviceCreateState.Device, &commandPoolCreateInfo, null, &commandPool));
             return commandPool;
@@ -415,6 +434,43 @@ namespace Veldrid.Vulkan2
             lock (QueueLock)
             {
                 cl.SubmitToQueue(_deviceCreateState.MainQueue, vkFence, null);
+            }
+        }
+
+        internal VulkanCommandList GetAndBeginCommandList()
+        {
+            if (!_sharedCommandLists.TryTake(out var sharedList))
+            {
+                var desc = new CommandListDescription() { Transient = true };
+                sharedList = (VulkanCommandList)ResourceFactory.CreateCommandList(desc);
+                sharedList.Name = "GraphicsDevice Shared CommandList";
+            }
+
+            sharedList.Begin();
+            return sharedList;
+        }
+
+        private static readonly Action<VulkanCommandList> s_returnClToPool = static cl =>
+        {
+            var device = cl.Device;
+
+            if (device._sharedCommandLists.Count < MaxSharedCommandLists)
+            {
+                device._sharedCommandLists.Add(cl);
+            }
+            else
+            {
+                cl.Dispose();
+            }
+        };
+
+        internal void EndAndSubmitCommands(VulkanCommandList cl)
+        {
+            cl.End();
+
+            lock (QueueLock)
+            {
+                cl.SubmitToQueue(_deviceCreateState.MainQueue, null, s_returnClToPool);
             }
         }
 
