@@ -13,6 +13,7 @@ using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkFormats = Veldrid.Vulkan.VkFormats;
+using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
 using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
@@ -685,22 +686,76 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private protected override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
+        private protected unsafe override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
+        {
+            VkMemoryBlock memoryBlock;
+            void* mappedPtr = null;
+            var rowPitch = 0u;
+            var depthPitch = 0u;
+
+            if (resource is VulkanBuffer buffer)
+            {
+                memoryBlock = buffer.Memory;
+            }
+            else
+            {
+                throw new NotImplementedException();
+            }
+
+            if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
+            {
+                var atomSize = _deviceCreateState.PhysicalDeviceProperties.limits.nonCoherentAtomSize;
+                var mapOffset = memoryBlock.Offset + bufferOffsetInBytes;
+                var bindOffset = mapOffset / atomSize * atomSize;
+                var bindSize = (sizeInBytes + atomSize - 1) / atomSize * atomSize;
+
+                if (memoryBlock.IsPersistentMapped)
+                {
+                    mappedPtr = (byte*)memoryBlock.BaseMappedPointer + mapOffset;
+                }
+                else
+                {
+                    var result = vkMapMemory(Device, memoryBlock.DeviceMemory, bindOffset, bindSize, 0, &mappedPtr);
+                    if (result is not VkResult.VK_ERROR_MEMORY_MAP_FAILED)
+                    {
+                        VulkanUtil.CheckResult(result);
+                    }
+                    else
+                    {
+                        ThrowMapFailedException(resource, subresource);
+                    }
+
+                    mappedPtr = (byte*)mappedPtr + (mapOffset - bindOffset);
+                }
+            }
+
+            return new MappedResource(resource, mode, (nint)mappedPtr, bufferOffsetInBytes, sizeInBytes, subresource, rowPitch, depthPitch);
+        }
+
+        private protected override void UnmapCore(MappableResource resource, uint subresource)
+        {
+            VkMemoryBlock memoryBlock;
+            if (resource is VulkanBuffer buffer)
+            {
+                memoryBlock = buffer.Memory;
+            }
+            else
+            {
+                throw new NotImplementedException();
+            }
+
+            if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL && !memoryBlock.IsPersistentMapped)
+            {
+                vkUnmapMemory(Device, memoryBlock.DeviceMemory);
+            }
+        }
+
+        private protected override void UpdateTextureCore(Texture texture, nint source, uint sizeInBytes, uint x, uint y, uint z, uint width, uint height, uint depth, uint mipLevel, uint arrayLayer)
         {
             throw new NotImplementedException();
         }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void UnmapCore(MappableResource resource, uint subresource)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void UpdateTextureCore(Texture texture, nint source, uint sizeInBytes, uint x, uint y, uint z, uint width, uint height, uint depth, uint mipLevel, uint arrayLayer)
         {
             throw new NotImplementedException();
         }
