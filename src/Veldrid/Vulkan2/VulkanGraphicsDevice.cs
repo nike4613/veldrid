@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
+using VkFormats = Veldrid.Vulkan.VkFormats;
 using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
@@ -534,14 +535,85 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        public override TextureSampleCount GetSampleCountLimit(PixelFormat format, bool depthFormat)
+        public unsafe override TextureSampleCount GetSampleCountLimit(PixelFormat format, bool depthFormat)
         {
-            throw new NotImplementedException();
+            VkImageUsageFlags usageFlags = VkImageUsageFlags.VK_IMAGE_USAGE_SAMPLED_BIT;
+            usageFlags |= depthFormat
+                ? VkImageUsageFlags.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                : VkImageUsageFlags.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+            VkImageFormatProperties formatProperties;
+            vkGetPhysicalDeviceImageFormatProperties(
+                _deviceCreateState.PhysicalDevice,
+                VkFormats.VdToVkPixelFormat(format, depthFormat ? TextureUsage.DepthStencil : default),
+                VkImageType.VK_IMAGE_TYPE_2D,
+                VkImageTiling.VK_IMAGE_TILING_OPTIMAL,
+                usageFlags,
+                0,
+                &formatProperties);
+
+            VkSampleCountFlags vkSampleCounts = formatProperties.sampleCounts;
+            if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_64_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_64_BIT)
+            {
+                return TextureSampleCount.Count64;
+            }
+            else if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_32_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_32_BIT)
+            {
+                return TextureSampleCount.Count32;
+            }
+            else if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_16_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_16_BIT)
+            {
+                return TextureSampleCount.Count16;
+            }
+            else if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_8_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_8_BIT)
+            {
+                return TextureSampleCount.Count8;
+            }
+            else if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_4_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_4_BIT)
+            {
+                return TextureSampleCount.Count4;
+            }
+            else if ((vkSampleCounts & VkSampleCountFlags.VK_SAMPLE_COUNT_2_BIT) == VkSampleCountFlags.VK_SAMPLE_COUNT_2_BIT)
+            {
+                return TextureSampleCount.Count2;
+            }
+            return TextureSampleCount.Count1;
         }
 
-        private protected override bool GetPixelFormatSupportCore(PixelFormat format, TextureType type, TextureUsage usage, out PixelFormatProperties properties)
+        private protected unsafe override bool GetPixelFormatSupportCore(PixelFormat format, TextureType type, TextureUsage usage, out PixelFormatProperties properties)
         {
-            throw new NotImplementedException();
+            VkFormat vkFormat = VkFormats.VdToVkPixelFormat(format, usage);
+            VkImageType vkType = VkFormats.VdToVkTextureType(type);
+            VkImageTiling tiling = usage == TextureUsage.Staging
+                ? VkImageTiling.VK_IMAGE_TILING_LINEAR
+                : VkImageTiling.VK_IMAGE_TILING_OPTIMAL;
+            VkImageUsageFlags vkUsage = VkFormats.VdToVkTextureUsage(usage);
+
+            VkImageFormatProperties vkProps;
+            VkResult result = vkGetPhysicalDeviceImageFormatProperties(
+                _deviceCreateState.PhysicalDevice,
+                vkFormat,
+                vkType,
+                tiling,
+                vkUsage,
+                0,
+                &vkProps);
+
+            if (result == VkResult.VK_ERROR_FORMAT_NOT_SUPPORTED)
+            {
+                properties = default;
+                return false;
+            }
+            VulkanUtil.CheckResult(result);
+
+            properties = new PixelFormatProperties(
+               vkProps.maxExtent.width,
+               vkProps.maxExtent.height,
+               vkProps.maxExtent.depth,
+               vkProps.maxMipLevels,
+               vkProps.maxArrayLayers,
+               (uint)vkProps.sampleCounts);
+            return true;
         }
 
         private protected override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
