@@ -21,7 +21,7 @@ namespace Veldrid.Vulkan2
         /// DeviceCreateState holds mutable intermediate state that will be (ultimately) used to construct the final VkGraphicsDevice, without
         /// having to pass around a huge mess of parameters.
         /// </summary>
-        private struct DeviceCreateState()
+        internal struct DeviceCreateState()
         {
             // Inputs
             public GraphicsDeviceOptions GdOptions;
@@ -44,6 +44,7 @@ namespace Veldrid.Vulkan2
             public VkPhysicalDevice PhysicalDevice;
             public VkPhysicalDeviceProperties PhysicalDeviceProperties;
             public VkPhysicalDeviceFeatures PhysicalDeviceFeatures;
+            public VkPhysicalDeviceMemoryProperties PhysicalDeviceMemoryProperties;
             public QueueFamilyProperties QueueFamilyInfo = new();
 
             // VkDevice auxiliary information
@@ -74,6 +75,7 @@ namespace Veldrid.Vulkan2
 
                 dcs.PhysicalDevice = SelectPhysicalDevice(dcs.Instance, out dcs.PhysicalDeviceProperties);
                 vkGetPhysicalDeviceFeatures(dcs.PhysicalDevice, &dcs.PhysicalDeviceFeatures);
+                vkGetPhysicalDeviceMemoryProperties(dcs.PhysicalDevice, &dcs.PhysicalDeviceMemoryProperties);
 
                 dcs.QueueFamilyInfo = IdentifyQueueFamilies(dcs.PhysicalDevice, dcs.Surface);
 
@@ -165,7 +167,7 @@ namespace Veldrid.Vulkan2
             return selectedDevice;
         }
 
-        private struct QueueFamilyProperties()
+        internal struct QueueFamilyProperties()
         {
             public int MainGraphicsFamilyIdx = -1;
             public int PresentFamilyIdx = -1;

@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
+using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkFormats = Veldrid.Vulkan.VkFormats;
 using static TerraFX.Interop.Vulkan.Vulkan;
@@ -103,9 +104,134 @@ namespace Veldrid.Vulkan2
             return new VulkanSampler(_gd, sampler);
         }
 
-        public override DeviceBuffer CreateBuffer(in BufferDescription description)
+        public unsafe override DeviceBuffer CreateBuffer(in BufferDescription description)
         {
-            throw new NotImplementedException();
+            ValidateBuffer(description);
+
+            var vkUsage = VkBufferUsageFlags.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VkBufferUsageFlags.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            if ((description.Usage & BufferUsage.VertexBuffer) != 0)
+            {
+                vkUsage |= VkBufferUsageFlags.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            }
+            if ((description.Usage & BufferUsage.IndexBuffer) != 0)
+            {
+                vkUsage |= VkBufferUsageFlags.VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+            }
+            if ((description.Usage & BufferUsage.UniformBuffer) != 0)
+            {
+                vkUsage |= VkBufferUsageFlags.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            }
+            if ((description.Usage & (BufferUsage.StructuredBufferReadOnly | BufferUsage.StructuredBufferReadWrite)) != 0)
+            {
+                vkUsage |= VkBufferUsageFlags.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            }
+            if ((description.Usage & BufferUsage.IndirectBuffer) != 0)
+            {
+                vkUsage |= VkBufferUsageFlags.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+            }
+
+            VkBuffer buffer = default;
+            VkMemoryBlock memoryBlock = default;
+            VulkanBuffer result;
+
+            try
+            {
+                var bufferCreateInfo = new VkBufferCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                    size = description.SizeInBytes,
+                    usage = vkUsage,
+                };
+                VulkanUtil.CheckResult(vkCreateBuffer(_gd.Device, &bufferCreateInfo, null, &buffer));
+
+                VkBool32 useDedicatedAllocation;
+                VkMemoryRequirements memoryRequirements;
+                if (_gd.vkGetBufferMemoryRequirements2 is not null)
+                {
+                    var memReqInfo2 = new VkBufferMemoryRequirementsInfo2()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+                        buffer = buffer,
+                    };
+                    var dediReqs = new VkMemoryDedicatedRequirements()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+                    };
+                    var memReqs2 = new VkMemoryRequirements2()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+                        pNext = &dediReqs,
+                    };
+                    _gd.vkGetBufferMemoryRequirements2(_gd.Device, &memReqInfo2, &memReqs2);
+                    memoryRequirements = memReqs2.memoryRequirements;
+                    useDedicatedAllocation = dediReqs.prefersDedicatedAllocation | dediReqs.requiresDedicatedAllocation;
+                }
+                else
+                {
+                    vkGetBufferMemoryRequirements(_gd.Device, buffer, &memoryRequirements);
+                    useDedicatedAllocation = false;
+                }
+
+                var isStaging = (description.Usage & BufferUsage.StagingReadWrite) != 0;
+                var isDynamic = (description.Usage & BufferUsage.DynamicReadWrite) != 0;
+                var hostVisible = isStaging || isDynamic;
+
+                var memPropFlags = hostVisible
+                    ? VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                    : VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+                if ((description.Usage & BufferUsage.StagingRead) != 0)
+                {
+                    // Use "host cached" memory for staging when available, for better performance of GPU -> CPU transfers
+                    var hostCachedAvailable = VulkanUtil.TryFindMemoryType(
+                        _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                        memoryRequirements.memoryTypeBits,
+                        memPropFlags | VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                        out _);
+
+                    if (hostCachedAvailable)
+                    {
+                        memPropFlags |= VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+                    }
+                }
+
+                memoryBlock = _gd.MemoryManager.Allocate(
+                    _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                    memoryRequirements.memoryTypeBits,
+                    memPropFlags,
+                    hostVisible,
+                    memoryRequirements.size,
+                    memoryRequirements.alignment,
+                    useDedicatedAllocation,
+                    dedicatedImage: default,
+                    buffer);
+
+                VulkanUtil.CheckResult(vkBindBufferMemory(_gd.Device, buffer, memoryBlock.DeviceMemory, memoryBlock.Offset));
+
+                result = new VulkanBuffer(_gd, description, buffer, memoryBlock);
+                buffer = default; // ownership is transferred
+                memoryBlock = default;
+            }
+            finally
+            {
+                if (buffer != VkBuffer.NULL)
+                {
+                    vkDestroyBuffer(_gd.Device, buffer, null);
+                }
+
+                if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
+                {
+                    _gd.MemoryManager.Free(memoryBlock);
+                }
+            }
+
+            // once we've created the buffer, populate it if initial data was specified
+            if (description.InitialData != 0)
+            {
+                _gd.UpdateBuffer(result, 0, description.InitialData, description.SizeInBytes);
+            }
+
+            return result;
         }
 
         public override Swapchain CreateSwapchain(in SwapchainDescription description)

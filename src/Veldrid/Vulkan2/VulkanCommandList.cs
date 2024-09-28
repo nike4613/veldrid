@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
@@ -60,17 +61,17 @@ namespace Veldrid.Vulkan2
 
         internal readonly struct StagingResourceInfo
         {
-            //public List<VkBuffer> BuffersUsed { get; }
-            //public List<VkTexture> TexturesUsed { get; }
+            public List<VulkanBuffer> BuffersUsed { get; }
+            //public List<VulkanTexture> TexturesUsed { get; }
             public HashSet<ResourceRefCount> Resources { get; }
 
             public bool IsValid => Resources != null;
 
             public StagingResourceInfo()
             {
-                //BuffersUsed = new List<VkBuffer>();
+                BuffersUsed = new();
                 //TexturesUsed = new List<VkTexture>();
-                Resources = new HashSet<ResourceRefCount>();
+                Resources = new();
             }
 
             public void AddResource(ResourceRefCount count)
@@ -83,7 +84,7 @@ namespace Veldrid.Vulkan2
 
             public void Clear()
             {
-                //BuffersUsed.Clear();
+                BuffersUsed.Clear();
                 //TexturesUsed.Clear();
                 Resources.Clear();
             }
@@ -175,6 +176,10 @@ namespace Veldrid.Vulkan2
         private void RecycleStagingInfo(ref StagingResourceInfo stagingInfo)
         {
             // TODO: recycle staging buffers
+            if (stagingInfo.BuffersUsed.Count > 0)
+            {
+                Device.ReturnPooledStagingBuffers(CollectionsMarshal.AsSpan(stagingInfo.BuffersUsed));
+            }
 
             foreach (var refcount in stagingInfo.Resources)
             {
@@ -407,6 +412,11 @@ namespace Veldrid.Vulkan2
             // TODO: finish render passes
 
             VulkanUtil.CheckResult(vkEndCommandBuffer(_currentCb));
+        }
+
+        internal void AddStagingResource(VulkanBuffer buffer)
+        {
+            _currentStagingInfo.BuffersUsed.Add(buffer);
         }
 
         private protected override void SetPipelineCore(Pipeline pipeline)

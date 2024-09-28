@@ -21,11 +21,13 @@ namespace Veldrid.Vulkan2
 {
     internal sealed partial class VulkanGraphicsDevice : GraphicsDevice
     {
-        private readonly DeviceCreateState _deviceCreateState;
+        internal readonly DeviceCreateState _deviceCreateState;
 
         private readonly VkDeviceMemoryManager _memoryManager;
         private readonly VulkanDescriptorPoolManager _descriptorPoolManager;
         internal readonly object QueueLock = new();
+
+        public VkDeviceMemoryManager MemoryManager => _memoryManager;
 
         private readonly ConcurrentBag<VkSemaphore> _availableSemaphores = new();
         private readonly ConcurrentBag<VkFence> _availableSubmissionFences = new();
@@ -35,6 +37,10 @@ namespace Veldrid.Vulkan2
 
         private readonly object _fenceCompletionCallbackLock = new();
         private readonly List<FenceCompletionCallbackInfo> _fenceCompletionCallbacks = new();
+
+        private const uint MinStagingBufferSize = 64;
+        private const uint MaxStagingBufferSize = 512;
+        private readonly List<VulkanBuffer> _availableStagingBuffers = new();
 
         // optional functions
 
@@ -475,6 +481,39 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        internal VulkanBuffer GetPooledStagingBuffer(uint size)
+        {
+            lock (_availableStagingBuffers)
+            {
+                for (int i = 0; i < _availableStagingBuffers.Count; i++)
+                {
+                    var buffer = _availableStagingBuffers[i];
+                    if (buffer.SizeInBytes >= size)
+                    {
+                        _availableStagingBuffers.RemoveAt(i);
+                        return buffer;
+                    }
+                }
+            }
+
+            uint newBufferSize = Math.Max(MinStagingBufferSize, size);
+            var buf =  (VulkanBuffer)ResourceFactory.CreateBuffer(
+                new BufferDescription(newBufferSize, BufferUsage.StagingWrite));
+            buf.Name = "Staging Buffer (GraphicsDevice)";
+            return buf;
+        }
+
+        internal void ReturnPooledStagingBuffers(ReadOnlySpan<VulkanBuffer> buffers)
+        {
+            lock (_availableStagingBuffers)
+            {
+                foreach (var buf in buffers)
+                {
+                    _availableStagingBuffers.Add(buf);
+                }
+            }
+        }
+
         private protected override void WaitForIdleCore()
         {
             lock (QueueLock)
@@ -616,6 +655,36 @@ namespace Veldrid.Vulkan2
             return true;
         }
 
+        private protected unsafe override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, nint source, uint sizeInBytes)
+        {
+            var vkBuffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(buffer);
+            VulkanBuffer? copySrcBuffer = null;
+
+            byte* mappedPtr;
+            byte* destPtr;
+            if (vkBuffer.Memory.IsPersistentMapped)
+            {
+                mappedPtr = (byte*)vkBuffer.Memory.BlockMappedPointer;
+                destPtr = mappedPtr + bufferOffsetInBytes;
+            }
+            else
+            {
+                copySrcBuffer = GetPooledStagingBuffer(sizeInBytes);
+                mappedPtr = (byte*)copySrcBuffer.Memory.BlockMappedPointer;
+                destPtr = mappedPtr;
+            }
+
+            Unsafe.CopyBlock(destPtr, (void*)source, sizeInBytes);
+
+            if (copySrcBuffer is not null)
+            {
+                var cl = GetAndBeginCommandList();
+                cl.AddStagingResource(copySrcBuffer);
+                cl.CopyBuffer(copySrcBuffer, 0, vkBuffer, bufferOffsetInBytes, sizeInBytes);
+                EndAndSubmitCommands(cl);
+            }
+        }
+
         private protected override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
         {
             throw new NotImplementedException();
@@ -627,11 +696,6 @@ namespace Veldrid.Vulkan2
         }
 
         private protected override void UnmapCore(MappableResource resource, uint subresource)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, nint source, uint sizeInBytes)
         {
             throw new NotImplementedException();
         }
