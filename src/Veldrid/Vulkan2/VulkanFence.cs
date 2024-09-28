@@ -18,7 +18,7 @@ namespace Veldrid.Vulkan2
             RefCount = new(this);
         }
 
-        public override void Dispose() => RefCount.DecrementDispose();
+        public override void Dispose() => RefCount?.DecrementDispose();
         unsafe void Vulkan.IResourceRefCountTarget.RefZeroed()
         {
             vkDestroyFence(_device.Device, DeviceFence, null);

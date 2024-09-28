@@ -23,10 +23,7 @@ namespace Veldrid.Vulkan2
             RefCount = new(this);
         }
 
-        public override void Dispose()
-        {
-            RefCount.DecrementDispose();
-        }
+        public override void Dispose() => RefCount?.DecrementDispose();
 
         void IResourceRefCountTarget.RefZeroed()
         {
