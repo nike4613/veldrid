@@ -210,6 +210,22 @@ namespace Veldrid.Vulkan2
 
             var dcs = _deviceCreateState;
 
+            lock (_availableStagingBuffers)
+            {
+                foreach (var buf in _availableStagingBuffers)
+                {
+                    buf.Dispose();
+                }
+            }
+
+            lock (_availableStagingTextures)
+            {
+                foreach (var tex in _availableStagingTextures)
+                {
+                    tex.Dispose();
+                }
+            }
+
             while (_sharedCommandLists.TryTake(out var cl))
             {
                 cl.Dispose();
