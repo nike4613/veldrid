@@ -493,6 +493,8 @@ namespace Veldrid.Vulkan2
                     if (buffer.SizeInBytes >= size)
                     {
                         _availableStagingBuffers.RemoveAt(i);
+                        // reset sync state so we treat this as fresh
+                        buffer.SyncState = default;
                         return buffer;
                     }
                 }
@@ -528,6 +530,8 @@ namespace Veldrid.Vulkan2
                     {
                         _availableStagingTextures.RemoveAt(i);
                         tex.SetStagingDimensions(width, height, depth, format);
+                        // reset sync state so we treat this tex as fresh
+                        tex.SyncState = default;
                         return tex;
                     }
                 }
@@ -717,10 +721,16 @@ namespace Veldrid.Vulkan2
 
             if (copySrcBuffer is not null)
             {
+                // note: we DON'T need an explicit flush here, because queue submission does so implicitly
+                // TODO: we DO still want a normal synchro though, so we want to update sync info for the staging write
                 var cl = GetAndBeginCommandList();
                 cl.AddStagingResource(copySrcBuffer);
                 cl.CopyBuffer(copySrcBuffer, 0, vkBuffer, bufferOffsetInBytes, sizeInBytes);
                 EndAndSubmitCommands(cl);
+            }
+            else
+            {
+                // TODO: vkFlushMappedMemoryRanges, then update sync info of buffer to include the host write
             }
         }
 
@@ -773,6 +783,8 @@ namespace Veldrid.Vulkan2
 
                     mappedPtr = (byte*)mappedPtr + (mapOffset - bindOffset);
                 }
+
+                // TODO: sync-to-host, then vkInvalidateMappedMemoryRanges
             }
 
             return new MappedResource(resource, mode, (nint)mappedPtr, bufferOffsetInBytes, sizeInBytes, subresource, rowPitch, depthPitch);
@@ -791,6 +803,8 @@ namespace Veldrid.Vulkan2
                 memoryBlock = tex.Memory;
             }
 
+            // TODO: vkFlushMappedMemoryRanges, then update sync info for a host write
+
             if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL && !memoryBlock.IsPersistentMapped)
             {
                 vkUnmapMemory(Device, memoryBlock.DeviceMemory);
@@ -808,35 +822,48 @@ namespace Veldrid.Vulkan2
             if ((tex.Usage & TextureUsage.Staging) != 0)
             {
                 // staging buffer, persistent-mapped VkBuffer, not an image
-                var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
-                var basePtr = (byte*)tex.Memory.BlockMappedPointer + layout.offset;
+                UpdateStagingTexture(tex, source, x, y, z, width, height, depth, mipLevel, arrayLayer);
 
-                var rowPitch = FormatHelpers.GetRowPitch(width, texture.Format);
-                var depthPitch = FormatHelpers.GetDepthPitch(rowPitch, height, texture.Format);
-                Util.CopyTextureRegion(
-                    (void*)source,
-                    0, 0, 0,
-                    rowPitch, depthPitch,
-                    basePtr,
-                    x, y, z,
-                    (uint)layout.rowPitch, (uint)layout.depthPitch,
-                    width, height, depth,
-                    texture.Format);
+                // TODO: vkFlushMappedMemoryRanges, then update sync info for a host write
             }
             else
             {
                 // not staging, backed by an actual VkImage, meaning we need to use a staging texture
-                var stagingTex = GetPooledStagingTexture(width, height, depth, texture.Format);
-                UpdateTextureCore(stagingTex, source, sizeInBytes, 0, 0, 0, width, height, depth, 0, 0);
+                var stagingTex = GetPooledStagingTexture(width, height, depth, tex.Format);
+                // use the helper directly to avoid an unnecessary synchronization op to device memory
+                UpdateStagingTexture(stagingTex, source, 0, 0, 0, width, height, depth, 0, 0);
+                // a queue submit implicitly synchronizes host->device, which normally requires the flush
+                // TODO: we DO want to mark stagingTex as having been written-to though. That should probably be done in UpdateStagingTexture though
 
                 var cl = GetAndBeginCommandList();
                 cl.AddStagingResource(stagingTex);
                 cl.CopyTexture(
                     stagingTex, 0, 0, 0, 0, 0,
-                    texture, x, y, z, mipLevel, arrayLayer,
+                    tex, x, y, z, mipLevel, arrayLayer,
                     width, height, depth, 1);
                 EndAndSubmitCommands(cl);
             }
+        }
+
+        private static unsafe void UpdateStagingTexture(VulkanTexture tex,
+            nint source, uint x, uint y, uint z,
+            uint width, uint height, uint depth,
+            uint mipLevel, uint arrayLayer)
+        {
+            var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
+            var basePtr = (byte*)tex.Memory.BlockMappedPointer + layout.offset;
+
+            var rowPitch = FormatHelpers.GetRowPitch(width, tex.Format);
+            var depthPitch = FormatHelpers.GetDepthPitch(rowPitch, height, tex.Format);
+            Util.CopyTextureRegion(
+                (void*)source,
+                0, 0, 0,
+                rowPitch, depthPitch,
+                basePtr,
+                x, y, z,
+                (uint)layout.rowPitch, (uint)layout.depthPitch,
+                width, height, depth,
+                tex.Format);
         }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)
