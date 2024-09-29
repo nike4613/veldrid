@@ -291,14 +291,18 @@ namespace Veldrid.Vulkan2
 
         public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
 
-        [SkipLocalsInit]
         internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<char> name)
         {
             if (vkDebugMarkerSetObjectNameEXT is null) return;
+            DoSet(this, type, target, name);
 
-            Span<byte> utf8Buffer = stackalloc byte[1024];
-            Util.GetNullTerminatedUtf8(name, ref utf8Buffer);
-            SetDebugMarkerName(type, target, utf8Buffer);
+            [SkipLocalsInit]
+            static void DoSet(VulkanGraphicsDevice @this, VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<char> name)
+            {
+                Span<byte> utf8Buffer = stackalloc byte[128];
+                Util.GetNullTerminatedUtf8(name, ref utf8Buffer);
+                @this.SetDebugMarkerName(type, target, utf8Buffer);
+            }
         }
 
         internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<byte> nameUtf8)

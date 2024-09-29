@@ -437,9 +437,74 @@ namespace Veldrid.Vulkan2
                 leaveOpen: true);
         }
 
-        public override TextureView CreateTextureView(in TextureViewDescription description)
+        public unsafe override TextureView CreateTextureView(in TextureViewDescription description)
         {
-            throw new NotImplementedException();
+            var tex = Util.AssertSubtype<Texture, VulkanTexture>(description.Target);
+
+            VkImageView imageView = default;
+
+            try
+            {
+                var aspectFlags =
+                    (description.Target.Usage & TextureUsage.DepthStencil) != 0
+                    ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT
+                    : VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+
+                var imageViewCreateInfo = new VkImageViewCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                    image = tex.DeviceImage,
+                    format = VkFormats.VdToVkPixelFormat(description.Format ?? tex.Format, tex.Usage),
+                    subresourceRange = new()
+                    {
+                        aspectMask = aspectFlags,
+                        baseMipLevel = description.BaseMipLevel,
+                        levelCount = description.MipLevels,
+                        baseArrayLayer = description.BaseArrayLayer,
+                        layerCount = description.ArrayLayers,
+                    }
+                };
+
+                if ((tex.Usage & TextureUsage.Cubemap) != 0)
+                {
+                    imageViewCreateInfo.viewType = description.ArrayLayers == 1
+                        ? VkImageViewType.VK_IMAGE_VIEW_TYPE_CUBE
+                        : VkImageViewType.VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+                    imageViewCreateInfo.subresourceRange.layerCount *= 6;
+                }
+                else
+                {
+                    switch (tex.Type)
+                    {
+                        case TextureType.Texture1D:
+                            imageViewCreateInfo.viewType = description.ArrayLayers == 1
+                                ? VkImageViewType.VK_IMAGE_VIEW_TYPE_1D
+                                : VkImageViewType.VK_IMAGE_VIEW_TYPE_1D_ARRAY;
+                            break;
+                        case TextureType.Texture2D:
+                            imageViewCreateInfo.viewType = description.ArrayLayers == 1
+                                ? VkImageViewType.VK_IMAGE_VIEW_TYPE_2D
+                                : VkImageViewType.VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                            break;
+                        case TextureType.Texture3D:
+                            imageViewCreateInfo.viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_3D;
+                            break;
+                    }
+                }
+
+                VulkanUtil.CheckResult(vkCreateImageView(_gd.Device, &imageViewCreateInfo, null, &imageView));
+
+                var result = new VulkanTextureView(_gd, description, imageView);
+                imageView = default; // ownership transfer
+                return result;
+            }
+            finally
+            {
+                if (imageView != VkImageView.NULL)
+                {
+                    vkDestroyImageView(_gd.Device, imageView, null);
+                }
+            }
         }
 
         public override Swapchain CreateSwapchain(in SwapchainDescription description)
