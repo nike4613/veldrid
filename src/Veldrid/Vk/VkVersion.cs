@@ -31,5 +31,12 @@
         {
             return version.value;
         }
+
+        public static bool operator <(VkVersion a, VkVersion b) => a.value < b.value;
+        public static bool operator >(VkVersion a, VkVersion b) => a.value > b.value;
+        public static bool operator <=(VkVersion a, VkVersion b) => a.value <= b.value;
+        public static bool operator >=(VkVersion a, VkVersion b) => a.value >= b.value;
+        public static bool operator ==(VkVersion a, VkVersion b) => a.value == b.value;
+        public static bool operator !=(VkVersion a, VkVersion b) => a.value != b.value;
     }
 }

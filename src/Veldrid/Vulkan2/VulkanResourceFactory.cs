@@ -507,17 +507,17 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        public override Framebuffer CreateFramebuffer(in FramebufferDescription description)
+        {
+            throw new NotImplementedException();
+        }
+
         public override Swapchain CreateSwapchain(in SwapchainDescription description)
         {
             throw new NotImplementedException();
         }
 
         public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override Framebuffer CreateFramebuffer(in FramebufferDescription description)
         {
             throw new NotImplementedException();
         }

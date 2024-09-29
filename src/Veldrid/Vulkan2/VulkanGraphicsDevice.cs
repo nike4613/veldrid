@@ -50,14 +50,19 @@ namespace Veldrid.Vulkan2
         internal readonly unsafe delegate* unmanaged<VkQueue, uint, VkSubmitInfo2*, VkFence, VkResult> vkQueueSubmit2;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDependencyInfo*, void> vkCmdPipelineBarrier2;
 
+        // dynamic_rendering
+        internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkRenderingInfo*, void> vkCmdBeginRendering;
+        internal readonly unsafe delegate* unmanaged<VkCommandBuffer, void> vkCmdEndRendering;
+
+        // dedicated allocation and memreq2
+        internal readonly unsafe delegate* unmanaged<VkDevice, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetBufferMemoryRequirements2;
+        internal readonly unsafe delegate* unmanaged<VkDevice, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetImageMemoryRequirements2;
+
         // debug marker ext
         internal readonly unsafe delegate* unmanaged<VkDevice, VkDebugMarkerObjectNameInfoEXT*, VkResult> vkDebugMarkerSetObjectNameEXT;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerBeginEXT;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, void> vkCmdDebugMarkerEndEXT;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerInsertEXT;
-        // dedicated allocation and memreq2
-        internal readonly unsafe delegate* unmanaged<VkDevice, VkBufferMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetBufferMemoryRequirements2;
-        internal readonly unsafe delegate* unmanaged<VkDevice, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*, void> vkGetImageMemoryRequirements2;
 
         public string? DriverName { get; }
         public string? DriverInfo { get; }
@@ -138,6 +143,16 @@ namespace Veldrid.Vulkan2
                     vkGetImageMemoryRequirements2 =
                         (delegate* unmanaged<VkDevice, VkImageMemoryRequirementsInfo2*, VkMemoryRequirements2*, void>)
                         GetDeviceProcAddr("vkGetImageMemoryRequirements2"u8, "vkGetImageMemoryRequirements2KHR"u8);
+                }
+
+                if (_deviceCreateState.HasDynamicRendering)
+                {
+                    vkCmdBeginRendering =
+                        (delegate* unmanaged<VkCommandBuffer, VkRenderingInfo*, void>)
+                        GetDeviceProcAddr("vkCmdBeginRendering"u8, "vkCmdBeginRenderingKHR"u8);
+                    vkCmdEndRendering =
+                        (delegate* unmanaged<VkCommandBuffer, void>)
+                        GetDeviceProcAddr("vkCmdEndRendering"u8, "vkCmdEndRenderingKHR"u8);
                 }
 
                 // for sanity, right now we hard-require sync2

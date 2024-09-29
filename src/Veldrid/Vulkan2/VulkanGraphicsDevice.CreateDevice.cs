@@ -12,6 +12,7 @@ using CommonStrings = Veldrid.Vulkan.CommonStrings;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using System.Numerics;
 
 namespace Veldrid.Vulkan2
 {
@@ -54,6 +55,7 @@ namespace Veldrid.Vulkan2
             public bool HasMemReqs2Ext;
             public bool HasDedicatedAllocationExt;
             public bool HasDriverPropertiesExt;
+            public bool HasDynamicRendering;
         }
 
         public static VulkanGraphicsDevice CreateDevice(GraphicsDeviceOptions gdOpts, VulkanDeviceOptions vkOpts, SwapchainDescription? swapchainDesc)
@@ -275,11 +277,12 @@ namespace Veldrid.Vulkan2
             {
                 VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(dcs.PhysicalDevice, null, &numDeviceExtensions, pExtensionProps));
 
-                dcs.HasMemReqs2Ext = false;
-                dcs.HasMaintenance1Ext = false;
-                dcs.HasDedicatedAllocationExt = false;
-                dcs.HasDriverPropertiesExt = false;
+                dcs.HasMemReqs2Ext = dcs.ApiVersion >= new VkVersion(1, 1, 0);
+                dcs.HasMaintenance1Ext = dcs.ApiVersion >= new VkVersion(1, 1, 0);
+                dcs.HasDedicatedAllocationExt = dcs.ApiVersion >= new VkVersion(1, 1, 0);
+                dcs.HasDriverPropertiesExt = dcs.ApiVersion >= new VkVersion(1, 2, 0);
                 dcs.HasDebugMarkerExt = false;
+                dcs.HasDynamicRendering = dcs.ApiVersion >= new VkVersion(1, 3, 0);
 
                 for (var i = 0; i < numDeviceExtensions; i++)
                 {
@@ -306,6 +309,10 @@ namespace Veldrid.Vulkan2
                             goto EnableExtension;
                         case "VK_KHR_driver_properties":
                             dcs.HasDriverPropertiesExt = true;
+                            goto EnableExtension;
+
+                        case "VK_KHR_dynamic_rendering":
+                            dcs.HasDynamicRendering = true;
                             goto EnableExtension;
 
                         default:
