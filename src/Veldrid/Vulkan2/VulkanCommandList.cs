@@ -59,7 +59,7 @@ namespace Veldrid.Vulkan2
         internal readonly struct StagingResourceInfo
         {
             public List<VulkanBuffer> BuffersUsed { get; }
-            //public List<VulkanTexture> TexturesUsed { get; }
+            public List<VulkanTexture> TexturesUsed { get; }
             public HashSet<ResourceRefCount> Resources { get; }
 
             public bool IsValid => Resources != null;
@@ -67,7 +67,7 @@ namespace Veldrid.Vulkan2
             public StagingResourceInfo()
             {
                 BuffersUsed = new();
-                //TexturesUsed = new List<VkTexture>();
+                TexturesUsed = new List<VulkanTexture>();
                 Resources = new();
             }
 
@@ -82,7 +82,7 @@ namespace Veldrid.Vulkan2
             public void Clear()
             {
                 BuffersUsed.Clear();
-                //TexturesUsed.Clear();
+                TexturesUsed.Clear();
                 Resources.Clear();
             }
         }
@@ -172,10 +172,13 @@ namespace Veldrid.Vulkan2
 
         private void RecycleStagingInfo(ref StagingResourceInfo stagingInfo)
         {
-            // TODO: recycle staging buffers
             if (stagingInfo.BuffersUsed.Count > 0)
             {
                 Device.ReturnPooledStagingBuffers(CollectionsMarshal.AsSpan(stagingInfo.BuffersUsed));
+            }
+            if (stagingInfo.TexturesUsed.Count > 0)
+            {
+                Device.ReturnPooledStagingTextures(CollectionsMarshal.AsSpan(stagingInfo.TexturesUsed));
             }
 
             foreach (var refcount in stagingInfo.Resources)
@@ -414,6 +417,11 @@ namespace Veldrid.Vulkan2
         internal void AddStagingResource(VulkanBuffer buffer)
         {
             _currentStagingInfo.BuffersUsed.Add(buffer);
+        }
+
+        internal void AddStagingResource(VulkanTexture texture)
+        {
+            _currentStagingInfo.TexturesUsed.Add(texture);
         }
 
         private protected override void SetPipelineCore(Pipeline pipeline)

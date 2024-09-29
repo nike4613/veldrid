@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -36,6 +37,11 @@ namespace Veldrid.Vulkan2
 
         private SyncState _syncState;
         public ref SyncState SyncState => ref _syncState;
+
+        public VkImage DeviceImage => _image;
+        public VkBuffer StagingBuffer => _stagingBuffer;
+        public VkMemoryBlock Memory => _memory;
+
 
         internal VulkanTexture(
             VulkanGraphicsDevice gd, in TextureDescription description,
@@ -154,6 +160,16 @@ namespace Veldrid.Vulkan2
             var layout = GetSubresourceLayout(mipLevel, arrayLevel);
             rowPitch = (uint)layout.rowPitch;
             depthPitch = (uint)layout.depthPitch;
+        }
+
+        internal void SetStagingDimensions(uint width, uint height, uint depth, PixelFormat format)
+        {
+            Debug.Assert(_stagingBuffer != VkBuffer.NULL);
+            Debug.Assert(Usage == TextureUsage.Staging);
+            Width = width;
+            Height = height;
+            Depth = depth;
+            Format = format;
         }
 
         private protected override TextureView CreateFullTextureView(GraphicsDevice gd)

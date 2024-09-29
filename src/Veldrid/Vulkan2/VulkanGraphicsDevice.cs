@@ -42,6 +42,7 @@ namespace Veldrid.Vulkan2
         private const uint MinStagingBufferSize = 64;
         private const uint MaxStagingBufferSize = 512;
         private readonly List<VulkanBuffer> _availableStagingBuffers = new();
+        private readonly List<VulkanTexture> _availableStagingTextures = new();
 
         // optional functions
 
@@ -515,6 +516,43 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        internal VulkanTexture GetPooledStagingTexture(uint width, uint height, uint depth, PixelFormat format)
+        {
+            var totalSize = FormatHelpers.GetRegionSize(width, height, depth, format);
+            lock (_availableStagingTextures)
+            {
+                for (int i = 0; i < _availableStagingTextures.Count; i++)
+                {
+                    var tex = _availableStagingTextures[i];
+                    if (tex.Memory.Size >= totalSize)
+                    {
+                        _availableStagingTextures.RemoveAt(i);
+                        tex.SetStagingDimensions(width, height, depth, format);
+                        return tex;
+                    }
+                }
+            }
+
+            var texWidth = uint.Max(256, width);
+            var texHeight = uint.Max(256, height);
+            var newTex = (VulkanTexture)ResourceFactory.CreateTexture(
+                TextureDescription.Texture3D(texWidth, texHeight, depth, 1, format, TextureUsage.Staging));
+            newTex.SetStagingDimensions(width, height, depth, format);
+            newTex.Name = "Staging Texture (GraphicsDevice)";
+            return newTex;
+        }
+
+        internal void ReturnPooledStagingTextures(ReadOnlySpan<VulkanTexture> textures)
+        {
+            lock (_availableStagingTextures)
+            {
+                foreach (var tex in textures)
+                {
+                    _availableStagingTextures.Add(tex);
+                }
+            }
+        }
+
         private protected override void WaitForIdleCore()
         {
             lock (QueueLock)
@@ -686,6 +724,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        // TODO: currently, mapping a resource maps ALL subresources, even though the Veldrid API only asks for 1
         private protected unsafe override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
         {
             VkMemoryBlock memoryBlock;
@@ -699,7 +738,14 @@ namespace Veldrid.Vulkan2
             }
             else
             {
-                throw new NotImplementedException();
+                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
+                Util.GetMipLevelAndArrayLayer(tex, subresource, out var mipLevel, out var arrayLayer);
+
+                var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
+                memoryBlock = tex.Memory;
+                bufferOffsetInBytes += (uint)layout.offset;
+                rowPitch = (uint)layout.rowPitch;
+                depthPitch = (uint)layout.depthPitch;
             }
 
             if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
@@ -741,7 +787,8 @@ namespace Veldrid.Vulkan2
             }
             else
             {
-                throw new NotImplementedException();
+                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
+                memoryBlock = tex.Memory;
             }
 
             if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL && !memoryBlock.IsPersistentMapped)
@@ -750,9 +797,46 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private protected override void UpdateTextureCore(Texture texture, nint source, uint sizeInBytes, uint x, uint y, uint z, uint width, uint height, uint depth, uint mipLevel, uint arrayLayer)
+        private protected unsafe override void UpdateTextureCore(Texture texture,
+            nint source, uint sizeInBytes,
+            uint x, uint y, uint z,
+            uint width, uint height, uint depth,
+            uint mipLevel, uint arrayLayer)
         {
-            throw new NotImplementedException();
+            var tex = Util.AssertSubtype<Texture, VulkanTexture>(texture);
+
+            if ((tex.Usage & TextureUsage.Staging) != 0)
+            {
+                // staging buffer, persistent-mapped VkBuffer, not an image
+                var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
+                var basePtr = (byte*)tex.Memory.BlockMappedPointer + layout.offset;
+
+                var rowPitch = FormatHelpers.GetRowPitch(width, texture.Format);
+                var depthPitch = FormatHelpers.GetDepthPitch(rowPitch, height, texture.Format);
+                Util.CopyTextureRegion(
+                    (void*)source,
+                    0, 0, 0,
+                    rowPitch, depthPitch,
+                    basePtr,
+                    x, y, z,
+                    (uint)layout.rowPitch, (uint)layout.depthPitch,
+                    width, height, depth,
+                    texture.Format);
+            }
+            else
+            {
+                // not staging, backed by an actual VkImage, meaning we need to use a staging texture
+                var stagingTex = GetPooledStagingTexture(width, height, depth, texture.Format);
+                UpdateTextureCore(stagingTex, source, sizeInBytes, 0, 0, 0, width, height, depth, 0, 0);
+
+                var cl = GetAndBeginCommandList();
+                cl.AddStagingResource(stagingTex);
+                cl.CopyTexture(
+                    stagingTex, 0, 0, 0, 0, 0,
+                    texture, x, y, z, mipLevel, arrayLayer,
+                    width, height, depth, 1);
+                EndAndSubmitCommands(cl);
+            }
         }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)

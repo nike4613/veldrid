@@ -104,6 +104,70 @@ namespace Veldrid.Vulkan2
             return new VulkanSampler(_gd, sampler);
         }
 
+        private unsafe VkMemoryRequirements GetBufferMemoryRequirements(VkBuffer buffer, out VkBool32 useDedicatedAllocation)
+        {
+            VkMemoryRequirements memoryRequirements;
+            if (_gd.vkGetBufferMemoryRequirements2 is not null)
+            {
+                var memReqInfo2 = new VkBufferMemoryRequirementsInfo2()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+                    buffer = buffer,
+                };
+                var dediReqs = new VkMemoryDedicatedRequirements()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+                };
+                var memReqs2 = new VkMemoryRequirements2()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+                    pNext = &dediReqs,
+                };
+                _gd.vkGetBufferMemoryRequirements2(_gd.Device, &memReqInfo2, &memReqs2);
+                memoryRequirements = memReqs2.memoryRequirements;
+                useDedicatedAllocation = dediReqs.prefersDedicatedAllocation | dediReqs.requiresDedicatedAllocation;
+            }
+            else
+            {
+                vkGetBufferMemoryRequirements(_gd.Device, buffer, &memoryRequirements);
+                useDedicatedAllocation = false;
+            }
+
+            return memoryRequirements;
+        }
+
+        private unsafe VkMemoryRequirements GetImageMemoryRequirements(VkImage image, out VkBool32 useDedicatedAllocation)
+        {
+            VkMemoryRequirements memoryRequirements;
+            if (_gd.vkGetImageMemoryRequirements2 is not null)
+            {
+                var memReqInfo2 = new VkImageMemoryRequirementsInfo2()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+                    image = image,
+                };
+                var dediReqs = new VkMemoryDedicatedRequirements()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+                };
+                var memReqs2 = new VkMemoryRequirements2()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+                    pNext = &dediReqs,
+                };
+                _gd.vkGetImageMemoryRequirements2(_gd.Device, &memReqInfo2, &memReqs2);
+                memoryRequirements = memReqs2.memoryRequirements;
+                useDedicatedAllocation = dediReqs.prefersDedicatedAllocation | dediReqs.requiresDedicatedAllocation;
+            }
+            else
+            {
+                vkGetImageMemoryRequirements(_gd.Device, image, &memoryRequirements);
+                useDedicatedAllocation = false;
+            }
+
+            return memoryRequirements;
+        }
+
         public unsafe override DeviceBuffer CreateBuffer(in BufferDescription description)
         {
             ValidateBuffer(description);
@@ -144,33 +208,7 @@ namespace Veldrid.Vulkan2
                 };
                 VulkanUtil.CheckResult(vkCreateBuffer(_gd.Device, &bufferCreateInfo, null, &buffer));
 
-                VkBool32 useDedicatedAllocation;
-                VkMemoryRequirements memoryRequirements;
-                if (_gd.vkGetBufferMemoryRequirements2 is not null)
-                {
-                    var memReqInfo2 = new VkBufferMemoryRequirementsInfo2()
-                    {
-                        sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
-                        buffer = buffer,
-                    };
-                    var dediReqs = new VkMemoryDedicatedRequirements()
-                    {
-                        sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
-                    };
-                    var memReqs2 = new VkMemoryRequirements2()
-                    {
-                        sType = VkStructureType.VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
-                        pNext = &dediReqs,
-                    };
-                    _gd.vkGetBufferMemoryRequirements2(_gd.Device, &memReqInfo2, &memReqs2);
-                    memoryRequirements = memReqs2.memoryRequirements;
-                    useDedicatedAllocation = dediReqs.prefersDedicatedAllocation | dediReqs.requiresDedicatedAllocation;
-                }
-                else
-                {
-                    vkGetBufferMemoryRequirements(_gd.Device, buffer, &memoryRequirements);
-                    useDedicatedAllocation = false;
-                }
+                var memoryRequirements = GetBufferMemoryRequirements(buffer, out var useDedicatedAllocation);
 
                 var isStaging = (description.Usage & BufferUsage.StagingReadWrite) != 0;
                 var isDynamic = (description.Usage & BufferUsage.DynamicReadWrite) != 0;
@@ -234,6 +272,176 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
+        public unsafe override Texture CreateTexture(in TextureDescription description)
+        {
+            var isStaging = (description.Usage & TextureUsage.Staging) != 0;
+
+            VkBuffer buffer = default;
+            VkImage image = default;
+            VkMemoryBlock memoryBlock = default;
+
+            try
+            {
+                if (!isStaging)
+                {
+                    // regular texture, using an actual VkImage
+                    var imageCreateInfo = new VkImageCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                        mipLevels = description.MipLevels,
+                        arrayLayers = description.ArrayLayers,
+                        imageType = VkFormats.VdToVkTextureType(description.Type),
+                        extent = new()
+                        {
+                            width = description.Width,
+                            height = description.Height,
+                            depth = description.Depth,
+                        },
+                        initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED,
+                        usage = VkFormats.VdToVkTextureUsage(description.Usage),
+                        tiling = VkImageTiling.VK_IMAGE_TILING_OPTIMAL,
+                        format = VkFormats.VdToVkPixelFormat(description.Format, description.Usage),
+                        flags = VkImageCreateFlags.VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+                        samples = VkFormats.VdToVkSampleCount(description.SampleCount),
+                    };
+
+                    var actualArrayLayers = description.ArrayLayers;
+                    if ((description.Usage & TextureUsage.Cubemap) != 0)
+                    {
+                        imageCreateInfo.flags |= VkImageCreateFlags.VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+                        actualArrayLayers = 6 * description.ArrayLayers;
+                    }
+
+                    var subresourceCount = description.MipLevels * description.Depth * actualArrayLayers;
+
+                    VulkanUtil.CheckResult(vkCreateImage(_gd.Device, &imageCreateInfo, null, &image));
+
+                    var memoryRequirements = GetImageMemoryRequirements(image, out var useDedicatedAllocation);
+
+                    memoryBlock = _gd.MemoryManager.Allocate(
+                        _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                        memoryRequirements.memoryTypeBits,
+                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        persistentMapped: false,
+                        memoryRequirements.size,
+                        memoryRequirements.alignment,
+                        useDedicatedAllocation,
+                        image,
+                        dedicatedBuffer: default);
+
+                    VulkanUtil.CheckResult(vkBindImageMemory(_gd.Device, image, memoryBlock.DeviceMemory, memoryBlock.Offset));
+                }
+                else
+                {
+                    // staging buffer, isn't backed by an actual VkImage
+                    var depthPitch = FormatHelpers.GetDepthPitch(
+                        FormatHelpers.GetRowPitch(description.Width, description.Format),
+                        description.Height,
+                        description.Format);
+                    var stagingSize = depthPitch * description.Depth;
+
+                    for (var level = 1u; level < description.MipLevels; level++)
+                    {
+                        var mipWidth = Util.GetDimension(description.Width, level);
+                        var mipHeight = Util.GetDimension(description.Height, level);
+                        var mipDepth = Util.GetDimension(description.Depth, level);
+
+                        depthPitch = FormatHelpers.GetDepthPitch(
+                            FormatHelpers.GetRowPitch(mipWidth, description.Format),
+                            mipHeight,
+                            description.Format);
+
+                        stagingSize += depthPitch * mipDepth;
+                    }
+
+                    var bufferCreateInfo = new VkBufferCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                        usage = VkBufferUsageFlags.VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VkBufferUsageFlags.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        size = stagingSize,
+                    };
+                    VulkanUtil.CheckResult(vkCreateBuffer(_gd.Device, &bufferCreateInfo, null, &buffer));
+
+                    var memoryRequirements = GetBufferMemoryRequirements(buffer, out var useDedicatedAllocation);
+
+                    // Use "host cached" memory when available, for better performance of GPU -> CPU transfers
+                    var propertyFlags =
+                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+                    if (!VulkanUtil.TryFindMemoryType(
+                        _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                        memoryRequirements.memoryTypeBits, propertyFlags, out _))
+                    {
+                        propertyFlags ^= VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+                    }
+
+                    memoryBlock = _gd.MemoryManager.Allocate(
+                        _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                        memoryRequirements.memoryTypeBits,
+                        propertyFlags,
+                        persistentMapped: true,
+                        memoryRequirements.size,
+                        memoryRequirements.alignment,
+                        useDedicatedAllocation,
+                        dedicatedImage: default,
+                        buffer);
+
+                    VulkanUtil.CheckResult(vkBindBufferMemory(_gd.Device, buffer, memoryBlock.DeviceMemory, memoryBlock.Offset));
+                }
+
+                var result = new VulkanTexture(
+                    _gd, in description,
+                    image, memoryBlock, buffer,
+                    isSwapchainTexture: false,
+                    leaveOpen: false);
+                image = default; // ownership transfer into the new object
+                buffer = default;
+                memoryBlock = default;
+
+                // now make sure the current image layout is set
+                // the texture is either:
+                // a) a buffer, so the image layout doesn't matter, or
+                // b) an image, created with an initial layout of PREINITIALIZED
+                result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED;
+
+                return result;
+            }
+            finally
+            {
+                if (buffer != VkBuffer.NULL)
+                {
+                    vkDestroyBuffer(_gd.Device, buffer, null);
+                }
+
+                if (image != VkImage.NULL)
+                {
+                    vkDestroyImage(_gd.Device, image, null);
+                }
+
+                if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
+                {
+                    _gd.MemoryManager.Free(memoryBlock);
+                }
+            }
+        }
+
+        public override Texture CreateTexture(ulong nativeTexture, in TextureDescription description)
+        {
+            var image = new VkImage(nativeTexture);
+
+            return new VulkanTexture(_gd, description,
+                image, default, default,
+                isSwapchainTexture: false,
+                leaveOpen: true);
+        }
+
+        public override TextureView CreateTextureView(in TextureViewDescription description)
+        {
+            throw new NotImplementedException();
+        }
+
         public override Swapchain CreateSwapchain(in SwapchainDescription description)
         {
             throw new NotImplementedException();
@@ -265,21 +473,6 @@ namespace Veldrid.Vulkan2
         }
 
         public override Shader CreateShader(in ShaderDescription description)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override Texture CreateTexture(in TextureDescription description)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override Texture CreateTexture(ulong nativeTexture, in TextureDescription description)
-        {
-            throw new NotImplementedException();
-        }
-
-        public override TextureView CreateTextureView(in TextureViewDescription description)
         {
             throw new NotImplementedException();
         }

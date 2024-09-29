@@ -25,7 +25,7 @@ namespace Veldrid.Vulkan2
         public SyncBarrierMasks LastWriter;
         // Bitfield marking which accesses in which shader stages stages have seen the last write
         public uint PerStageReaders; // TODO: turn this into a concrete layout
-        public VkImageLayout CurrentLayout;
+        public VkImageLayout CurrentImageLayout;
     }
 
     internal struct ResourceSyncInfo
