@@ -8,7 +8,7 @@ using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan2
 {
-    internal sealed unsafe class VulkanTextureView : TextureView, IResourceRefCountTarget, ISynchronizedResource
+    internal sealed unsafe class VulkanTextureView : TextureView, IResourceRefCountTarget
     {
         private readonly VulkanGraphicsDevice _gd;
         private readonly VkImageView _imageView;
@@ -16,10 +16,6 @@ namespace Veldrid.Vulkan2
 
         public VkImageView ImageView => _imageView;
         public new VulkanTexture Target => (VulkanTexture)base.Target;
-
-        // note: synchronization is done via the underlying image
-        // TODO: it might make more sense in general to go directly through to the target instead of forwarding like this
-        public ref SyncState SyncState => ref Target.SyncState;
 
         public ResourceRefCount RefCount { get; }
         public override bool IsDisposed => RefCount.IsDisposed;

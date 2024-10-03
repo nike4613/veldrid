@@ -343,6 +343,16 @@ namespace Veldrid.Vulkan2
             // TODO:
         }
 
+        public void SyncResource(ISynchronizedResource resource, in SyncRequest req)
+        {
+            // TODO:
+        }
+
+        public void EmitQueuedSynchro()
+        {
+
+        }
+
         [DoesNotReturn]
         private static void ThrowUnreachableStateException()
         {

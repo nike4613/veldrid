@@ -25,7 +25,7 @@ namespace Veldrid.Vulkan2
 
         public override GraphicsBackend BackendType => GraphicsBackend.Vulkan;
 
-        public unsafe override Fence CreateFence(bool signaled)
+        public unsafe override VulkanFence CreateFence(bool signaled)
         {
             VkFence fence = default;
             try
@@ -51,7 +51,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public unsafe override CommandList CreateCommandList(in CommandListDescription description)
+        public unsafe override VulkanCommandList CreateCommandList(in CommandListDescription description)
         {
             VkCommandPool pool = default;
             try
@@ -71,7 +71,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public unsafe override Sampler CreateSampler(in SamplerDescription description)
+        public unsafe override VulkanSampler CreateSampler(in SamplerDescription description)
         {
             ValidateSampler(description);
 
@@ -168,7 +168,7 @@ namespace Veldrid.Vulkan2
             return memoryRequirements;
         }
 
-        public unsafe override DeviceBuffer CreateBuffer(in BufferDescription description)
+        public unsafe override VulkanBuffer CreateBuffer(in BufferDescription description)
         {
             ValidateBuffer(description);
 
@@ -272,7 +272,7 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        public unsafe override Texture CreateTexture(in TextureDescription description)
+        public unsafe override VulkanTexture CreateTexture(in TextureDescription description)
         {
             var isStaging = (description.Usage & TextureUsage.Staging) != 0;
 
@@ -427,7 +427,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Texture CreateTexture(ulong nativeTexture, in TextureDescription description)
+        public override VulkanTexture CreateTexture(ulong nativeTexture, in TextureDescription description)
         {
             var image = new VkImage(nativeTexture);
 
@@ -437,7 +437,7 @@ namespace Veldrid.Vulkan2
                 leaveOpen: true);
         }
 
-        public unsafe override TextureView CreateTextureView(in TextureViewDescription description)
+        public unsafe override VulkanTextureView CreateTextureView(in TextureViewDescription description)
         {
             var tex = Util.AssertSubtype<Texture, VulkanTexture>(description.Target);
 
@@ -509,6 +509,7 @@ namespace Veldrid.Vulkan2
 
         public override Framebuffer CreateFramebuffer(in FramebufferDescription description)
         {
+            // TODO:
             throw new NotImplementedException();
         }
 

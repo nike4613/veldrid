@@ -64,6 +64,11 @@ namespace Veldrid.Vulkan2
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, void> vkCmdDebugMarkerEndEXT;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerInsertEXT;
 
+
+        public VkDevice Device => _deviceCreateState.Device;
+        public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
+        public new VulkanResourceFactory ResourceFactory => (VulkanResourceFactory)ResourceFactory;
+
         public string? DriverName { get; }
         public string? DriverInfo { get; }
 
@@ -191,7 +196,7 @@ namespace Veldrid.Vulkan2
                     bufferRangeBinding: true,
                     shaderFloat64: (VkBool32)_deviceCreateState.PhysicalDeviceFeatures.shaderFloat64);
 
-                ResourceFactory = new VulkanResourceFactory(this);
+                base.ResourceFactory = new VulkanResourceFactory(this);
                 _descriptorPoolManager = new(this);
 
                 // TODO: MainSwapchain
@@ -317,10 +322,6 @@ namespace Veldrid.Vulkan2
                 _availableSubmissionFences.Add(fence);
             }
         }
-
-        public VkDevice Device => _deviceCreateState.Device;
-
-        public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
 
         internal unsafe void SetDebugMarkerName(VkDebugReportObjectTypeEXT type, ulong target, ReadOnlySpan<char> name)
         {
