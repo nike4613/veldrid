@@ -25,6 +25,7 @@ namespace Veldrid.Vulkan2
             _gd = gd;
             _imageView = imageView;
 
+            Target.RefCount.Increment();
             RefCount = new(this);
         }
 
@@ -35,6 +36,8 @@ namespace Veldrid.Vulkan2
             {
                 vkDestroyImageView(_gd.Device, _imageView, null);
             }
+
+            Target.RefCount.Decrement();
         }
 
         public override string? Name

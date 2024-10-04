@@ -15,6 +15,7 @@ using VkVersion = Veldrid.Vulkan.VkVersion;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkFormats = Veldrid.Vulkan.VkFormats;
 using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
+using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
@@ -24,6 +25,7 @@ namespace Veldrid.Vulkan2
     internal sealed partial class VulkanGraphicsDevice : GraphicsDevice
     {
         internal readonly DeviceCreateState _deviceCreateState;
+        internal readonly List<FixedUtf8String> _surfaceExtensions;
 
         private readonly VkDeviceMemoryManager _memoryManager;
         private readonly VulkanDescriptorPoolManager _descriptorPoolManager;
@@ -75,13 +77,14 @@ namespace Veldrid.Vulkan2
         public string? DriverName { get; }
         public string? DriverInfo { get; }
 
-        private unsafe VulkanGraphicsDevice(ref DeviceCreateState deviceCreateState)
+        private unsafe VulkanGraphicsDevice(ref DeviceCreateState deviceCreateState, SwapchainDescription? swapchainDesc, List<FixedUtf8String> surfaceExtensions)
         {
             try
             {
                 // once we adopt the DCS, default-out the source because the caller will try to free the handles (which we now own)
                 _deviceCreateState = deviceCreateState;
                 deviceCreateState = default;
+                _surfaceExtensions = surfaceExtensions;
 
                 // Populate knowns based on the fact that this is a Vulkan implementation
                 BackendType = GraphicsBackend.Vulkan;
@@ -203,6 +206,13 @@ namespace Veldrid.Vulkan2
                 _descriptorPoolManager = new(this);
 
                 // TODO: MainSwapchain
+                if (swapchainDesc is { } desc)
+                {
+                    Debug.Assert(_deviceCreateState.Surface != VkSurfaceKHR.NULL);
+
+                    // note: the main swapchain takes ownership of the created surface
+                    MainSwapchain = new VulkanSwapchain(this, desc, ref Unsafe.AsRef(ref _deviceCreateState.Surface));
+                }
 
                 EagerlyAllocateSomeResources();
                 PostDeviceCreated();
@@ -230,6 +240,7 @@ namespace Veldrid.Vulkan2
             _disposed = true;
 
             // TODO: destroy all other associated information
+            MainSwapchain?.Dispose();
 
             var dcs = _deviceCreateState;
 

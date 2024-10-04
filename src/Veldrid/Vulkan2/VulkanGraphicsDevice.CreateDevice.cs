@@ -83,7 +83,7 @@ namespace Veldrid.Vulkan2
 
                 dcs.Device = CreateLogicalDevice(ref dcs);
 
-                return new VulkanGraphicsDevice(ref dcs);
+                return new VulkanGraphicsDevice(ref dcs, swapchainDesc, surfaceExtensionList);
             }
             finally
             {

@@ -621,9 +621,22 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Swapchain CreateSwapchain(in SwapchainDescription description)
+        public unsafe override Swapchain CreateSwapchain(in SwapchainDescription description)
         {
-            throw new NotImplementedException();
+            VkSurfaceKHR surface = default;
+
+            try
+            {
+                surface = VulkanGraphicsDevice.CreateSurface(_gd._deviceCreateState.Instance, _gd._surfaceExtensions, description.Source);
+                return new VulkanSwapchain(_gd, in description, ref surface);
+            }
+            finally
+            {
+                if (surface != VkSurfaceKHR.NULL)
+                {
+                    vkDestroySurfaceKHR(_gd._deviceCreateState.Instance, surface, null);
+                }
+            }
         }
 
         public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)

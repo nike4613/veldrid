@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
+using System.Buffers;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -14,13 +16,11 @@ using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
-using System.Diagnostics;
-using System.Buffers;
 
 namespace Veldrid.Vulkan2
 {
     // VulkanDynamicFramebuffer uses Vulkan's new dynamic_rendering APIs, which doesn't require the construction of explicit render passes
-    // ir framebuffer objects. Using this enables framebuffers to be much cheaper to construct, when available.
+    // or framebuffer objects. Using this enables framebuffers to be much cheaper to construct, when available.
 
     internal sealed class VulkanDynamicFramebuffer : VulkanFramebuffer, IResourceRefCountTarget
     {
@@ -60,7 +60,18 @@ namespace Veldrid.Vulkan2
             RefCount = new(this);
         }
 
-        void IResourceRefCountTarget.RefZeroed() { }
+        void IResourceRefCountTarget.RefZeroed()
+        {
+            // we are the unique owners of these image views
+            _depthTargetView?.Dispose();
+            if (_colorTargetViews is not null)
+            {
+                foreach (var target in _colorTargetViews)
+                {
+                    target?.Dispose();
+                }
+            }
+        }
 
         public override unsafe void StartRenderPass(VulkanCommandList cl, VkCommandBuffer cb, bool firstBinding,
             VkClearValue? depthClear, ReadOnlySpan<VkClearValue> colorTargetClear, ReadOnlySpan<bool> setColorClears)
