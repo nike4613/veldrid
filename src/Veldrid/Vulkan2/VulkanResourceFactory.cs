@@ -573,7 +573,7 @@ namespace Veldrid.Vulkan2
                         viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D,
                         subresourceRange = new()
                         {
-                            aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                            aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT,
                             baseMipLevel = depthTargetDesc.MipLevel,
                             levelCount = 1,
                             baseArrayLayer = depthTargetDesc.ArrayLayer,

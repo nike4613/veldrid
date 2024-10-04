@@ -946,6 +946,7 @@ namespace Veldrid.Vulkan2
 
                         // and an associated resource
                         mapping = new(this, syncResource, memoryBlock);
+                        mapping.UpdateMode(mode);
                         _mappedResources.Add(resource, mapping);
                     }
                 }

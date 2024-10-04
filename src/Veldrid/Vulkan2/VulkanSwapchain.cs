@@ -60,25 +60,32 @@ namespace Veldrid.Vulkan2
             RefCount = new(this);
             surface = default; // we take ownership of the surface
 
-            VkFenceCreateInfo fenceCI = new()
+            try
             {
-                sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
-            };
+                VkFenceCreateInfo fenceCI = new()
+                {
+                    sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+                };
 
-            VkFence imageAvailableFence;
-            vkCreateFence(_gd.Device, &fenceCI, null, &imageAvailableFence);
-            _imageAvailableFence = imageAvailableFence;
+                VkFence imageAvailableFence;
+                vkCreateFence(_gd.Device, &fenceCI, null, &imageAvailableFence);
+                _imageAvailableFence = imageAvailableFence;
 
-            _framebuffer = new(gd, this, description);
+                _framebuffer = new(gd, this, description);
 
-            CreateSwapchain(description.Width, description.Height);
-
+                CreateSwapchain(description.Width, description.Height);
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
         }
 
         public override void Dispose() => RefCount?.DecrementDispose();
         unsafe void IResourceRefCountTarget.RefZeroed()
         {
-            _framebuffer?.Dispose();
+            _framebuffer?.RefZeroed();
 
             if (_imageAvailableFence != VkFence.NULL)
             {

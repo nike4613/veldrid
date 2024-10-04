@@ -5,17 +5,20 @@ using static TerraFX.Interop.Vulkan.Vulkan;
 using static TerraFX.Interop.Vulkan.VkImageLayout;
 using static TerraFX.Interop.Vulkan.VkAccessFlags;
 using static TerraFX.Interop.Vulkan.VkPipelineStageFlags;
+using System.Threading;
 
 namespace Veldrid.Vulkan
 {
     internal unsafe static class VulkanUtil
     {
+        private static int _mayHaveThreadException;
+
         [ThreadStatic]
         private static Exception? _threadDebugCallbackException;
 
         public static void CheckResult(VkResult result)
         {
-            if (result != VkResult.VK_SUCCESS)
+            if (result != VkResult.VK_SUCCESS || _mayHaveThreadException != 0)
             {
                 ThrowResult(result);
             }
@@ -27,6 +30,10 @@ namespace Veldrid.Vulkan
             {
                 exception = new AggregateException([exc, exception]).Flatten();
             }
+            else
+            {
+                Interlocked.Increment(ref _mayHaveThreadException);
+            }
             _threadDebugCallbackException = exception;
         }
 
@@ -34,8 +41,14 @@ namespace Veldrid.Vulkan
         {
             if (_threadDebugCallbackException is { } exc)
             {
+                Interlocked.Decrement(ref _mayHaveThreadException);
                 _threadDebugCallbackException = null;
                 throw exc;
+            }
+
+            if (result is VkResult.VK_SUCCESS)
+            {
+                return;
             }
 
             if (result is VkResult.VK_ERROR_OUT_OF_DEVICE_MEMORY or VkResult.VK_ERROR_OUT_OF_HOST_MEMORY)

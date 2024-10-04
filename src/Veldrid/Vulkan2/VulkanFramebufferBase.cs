@@ -38,7 +38,7 @@ namespace Veldrid.Vulkan2
         public abstract VulkanFramebuffer CurrentFramebuffer { get; }
 
         public sealed override bool IsDisposed => RefCount.IsDisposed;
-        public sealed override void Dispose() => RefCount?.DecrementDispose();
+        public override void Dispose() => RefCount?.DecrementDispose();
 
         public uint AttachmentCount { get; protected set; }
         public FramebufferAttachment[] ColorTargetsArray => _colorTargets;

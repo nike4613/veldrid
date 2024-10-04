@@ -18,7 +18,7 @@ using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan2
 {
-    internal sealed class VulkanSwapchainFramebuffer : VulkanFramebufferBase, IResourceRefCountTarget
+    internal sealed class VulkanSwapchainFramebuffer : VulkanFramebufferBase
     {
         private readonly VulkanGraphicsDevice _gd;
         private readonly VulkanSwapchain _swapchain;
@@ -44,22 +44,22 @@ namespace Veldrid.Vulkan2
             VulkanSwapchain swapchain,
             in SwapchainDescription description)
         {
-            swapchain.RefCount.Increment();
-
             _gd = gd;
             _swapchain = swapchain;
             _depthFormat = description.DepthFormat;
 
             AttachmentCount = _depthFormat.HasValue ? 2u : 1u; // 1 color + 1 depth
 
-            RefCount = new(this);
+            // SwapchainFramebuffer and Swapchain SHARE their refcount, otherwise they always keep each other alive
+            RefCount = swapchain.RefCount;
         }
 
-        void IResourceRefCountTarget.RefZeroed()
+        // Dispose() here is a NOP because a SwapchainFramebuffer is tightly tied to a Swapchain for lifetime, so that's the managed one
+        public override void Dispose() { }
+
+        internal void RefZeroed()
         {
             DestroySwapchainFramebuffers();
-
-            _swapchain.RefCount.Decrement();
         }
 
         internal void SetImageIndex(uint index)
@@ -113,6 +113,7 @@ namespace Veldrid.Vulkan2
                         uint.Max(1, _extent.width), uint.Max(1, _extent.height), mipLevels: 1, arrayLayers: 1,
                         VkFormats.VkToVdPixelFormat(_imageFormat), TextureUsage.RenderTarget),
                     _images[i], default, default, isSwapchainTexture: true, leaveOpen: true);
+                tex.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
 
                 var desc = new FramebufferDescription(_depthTarget?.Target, tex);
                 _framebuffers[i] = _gd.ResourceFactory.CreateFramebuffer(desc);
