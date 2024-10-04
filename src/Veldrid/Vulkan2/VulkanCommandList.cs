@@ -60,22 +60,27 @@ namespace Veldrid.Vulkan2
         {
             public List<VulkanBuffer> BuffersUsed { get; }
             public List<VulkanTexture> TexturesUsed { get; }
-            public HashSet<ResourceRefCount> Resources { get; }
+            public HashSet<ResourceRefCount> RefCounts { get; }
 
-            public bool IsValid => Resources != null;
+            public bool IsValid => RefCounts != null;
 
             public StagingResourceInfo()
             {
                 BuffersUsed = new();
                 TexturesUsed = new List<VulkanTexture>();
-                Resources = new();
+                RefCounts = new();
             }
 
-            public void AddResource(ResourceRefCount count)
+            public void AddResource(ISynchronizedResource resource)
             {
-                if (Resources.Add(count))
+                AddRefCount(resource.RefCount);
+            }
+
+            public void AddRefCount(ResourceRefCount refCount)
+            {
+                if (RefCounts.Add(refCount))
                 {
-                    count.Increment();
+                    refCount.Increment();
                 }
             }
 
@@ -83,7 +88,7 @@ namespace Veldrid.Vulkan2
             {
                 BuffersUsed.Clear();
                 TexturesUsed.Clear();
-                Resources.Clear();
+                RefCounts.Clear();
             }
         }
 
@@ -181,7 +186,7 @@ namespace Veldrid.Vulkan2
                 Device.ReturnPooledStagingTextures(CollectionsMarshal.AsSpan(stagingInfo.TexturesUsed));
             }
 
-            foreach (var refcount in stagingInfo.Resources)
+            foreach (var refcount in stagingInfo.RefCounts)
             {
                 refcount.Decrement();
             }
@@ -217,13 +222,14 @@ namespace Veldrid.Vulkan2
 
             // now we want to do all of the actual submission work
             var syncToMainSem = Device.GetSemaphore();
+            var mainCompleteSem = Device.GetSemaphore();
             var fence = submitFence is not null ? submitFence.DeviceFence : Device.GetSubmissionFence();
             var fenceWasRented = submitFence is null;
 
             if (submitFence is not null)
             {
                 // if we're to wait on a fence controlled by a VulkanFence, make sure to ref it
-                resourceInfo.AddResource(submitFence.RefCount);
+                resourceInfo.AddRefCount(submitFence.RefCount);
             }
 
             {
@@ -242,6 +248,7 @@ namespace Veldrid.Vulkan2
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                     semaphore = syncToMainSem,
+                    // TODO: I think we can do better here. We know in principle which stages are in the second scope of our sync, so should duplicate that here.
                     stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                 };
 
@@ -350,7 +357,7 @@ namespace Veldrid.Vulkan2
 
         public void EmitQueuedSynchro()
         {
-
+            // TODO:
         }
 
         [DoesNotReturn]

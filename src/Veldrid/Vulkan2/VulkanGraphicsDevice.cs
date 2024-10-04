@@ -1062,9 +1062,43 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private protected override void SwapBuffersCore(Swapchain swapchain)
+        private protected unsafe override void SwapBuffersCore(Swapchain swapchain)
         {
-            throw new NotImplementedException();
+            var vkSwapchain = Util.AssertSubtype<Swapchain, VulkanSwapchain>(swapchain);
+            var deviceSwapchain = vkSwapchain.DeviceSwapchain;
+            var imageIndex = vkSwapchain.ImageIndex;
+
+            // TODO: need to sync to layout PRESENT_SRC_KHR before presenting
+
+            var presentInfo = new VkPresentInfoKHR()
+            {
+                sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                swapchainCount = 1,
+                pSwapchains = &deviceSwapchain,
+                pImageIndices = &imageIndex,
+            };
+
+            var presentLock = vkSwapchain.PresentQueueIndex == _deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx ? QueueLock : vkSwapchain.PresentLock;
+            lock (presentLock)
+            {
+                var presentResult = vkQueuePresentKHR(vkSwapchain.PresentQueue, &presentInfo);
+                
+                if (presentResult
+                    is not VkResult.VK_SUCCESS
+                    and not VkResult.VK_SUBOPTIMAL_KHR
+                    and not VkResult.VK_ERROR_OUT_OF_DATE_KHR)
+                {
+                    VulkanUtil.ThrowResult(presentResult);
+                }
+
+                VkFence fence = vkSwapchain.ImageAvailableFence;
+                if (vkSwapchain.AcquireNextImage(Device, VkSemaphore.NULL, fence))
+                {
+                    VulkanUtil.CheckResult(vkWaitForFences(Device, 1, &fence, (VkBool32)true, ulong.MaxValue));
+
+                    VulkanUtil.CheckResult(vkResetFences(Device, 1, &fence));
+                }
+            }
         }
     }
 }
