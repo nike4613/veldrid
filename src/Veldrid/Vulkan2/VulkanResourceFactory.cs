@@ -507,10 +507,118 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Framebuffer CreateFramebuffer(in FramebufferDescription description)
+        public override VulkanFramebuffer CreateFramebuffer(in FramebufferDescription description)
         {
-            // TODO:
-            throw new NotImplementedException();
+            if (_gd._deviceCreateState.HasDynamicRendering)
+            {
+                return CreateDynamicFramebuffer(description);
+            }
+            else
+            {
+                throw new NotImplementedException();
+            }
+        }
+
+        private unsafe VulkanDynamicFramebuffer CreateDynamicFramebuffer(in FramebufferDescription description)
+        {
+            VkImageView imageView = default;
+            VulkanTextureView? depthTarget = null;
+            VulkanTextureView[]? colorTargets = null;
+
+            try
+            {
+                if (description.ColorTargets is not null)
+                {
+                    colorTargets = new VulkanTextureView[description.ColorTargets.Length];
+                    for (var i = 0; i < description.ColorTargets.Length; i++)
+                    {
+                        var targetDesc = description.ColorTargets[i];
+                        var target = Util.AssertSubtype<Texture, VulkanTexture>(targetDesc.Target);
+
+                        var imageViewCreateInfo = new VkImageViewCreateInfo()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                            image = target.DeviceImage,
+                            format = target.VkFormat,
+                            viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D,
+                            subresourceRange = new()
+                            {
+                                aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                                baseMipLevel = targetDesc.MipLevel,
+                                levelCount = 1,
+                                baseArrayLayer = targetDesc.ArrayLayer,
+                                layerCount = 1,
+                            }
+                        };
+
+                        imageView = default;
+                        VulkanUtil.CheckResult(vkCreateImageView(_gd.Device, &imageViewCreateInfo, null, &imageView));
+
+                        colorTargets[i] = new VulkanTextureView(_gd,
+                            new(target, targetDesc.MipLevel, 1, targetDesc.ArrayLayer, 1),
+                            imageView);
+                        imageView = default;
+                    }
+                }
+
+                if (description.DepthTarget is { } depthTargetDesc)
+                {
+                    var target = Util.AssertSubtype<Texture, VulkanTexture>(depthTargetDesc.Target);
+
+                    var imageViewCreateInfo = new VkImageViewCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        image = target.DeviceImage,
+                        format = target.VkFormat,
+                        viewType = VkImageViewType.VK_IMAGE_VIEW_TYPE_2D,
+                        subresourceRange = new()
+                        {
+                            aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                            baseMipLevel = depthTargetDesc.MipLevel,
+                            levelCount = 1,
+                            baseArrayLayer = depthTargetDesc.ArrayLayer,
+                            layerCount = 1,
+                        }
+                    };
+
+                    imageView = default;
+                    VulkanUtil.CheckResult(vkCreateImageView(_gd.Device, &imageViewCreateInfo, null, &imageView));
+
+                    depthTarget = new VulkanTextureView(_gd,
+                        new(target, depthTargetDesc.MipLevel, 1, depthTargetDesc.ArrayLayer, 1),
+                        imageView);
+                    imageView = default;
+                }
+
+                var result = new VulkanDynamicFramebuffer(_gd, description, depthTarget, colorTargets ?? []);
+                depthTarget = null; // ownership transfer
+                colorTargets = null;
+
+                return result;
+            }
+            finally
+            {
+                if (imageView != VkImageView.NULL)
+                {
+                    vkDestroyImageView(_gd.Device, imageView, null);
+                }
+
+                if (depthTarget is not null)
+                {
+                    depthTarget.Dispose();
+                }
+
+                if (colorTargets is not null)
+                {
+                    foreach (var target in colorTargets)
+                    {
+                        if (target is not null)
+                        {
+                            target.Dispose();
+                        }
+                    }
+                }
+            }
         }
 
         public override Swapchain CreateSwapchain(in SwapchainDescription description)
