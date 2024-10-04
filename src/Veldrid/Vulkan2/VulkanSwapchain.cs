@@ -36,7 +36,7 @@ namespace Veldrid.Vulkan2
         public ResourceRefCount RefCount { get; }
         public object PresentLock { get; } = new();
 
-        public override Framebuffer Framebuffer => _framebuffer;
+        public override VulkanSwapchainFramebuffer Framebuffer => _framebuffer;
         public override bool IsDisposed => RefCount.IsDisposed;
         public VkSwapchainKHR DeviceSwapchain => _deviceSwapchain;
         public uint ImageIndex => _currentImageIndex;

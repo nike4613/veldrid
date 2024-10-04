@@ -492,7 +492,7 @@ namespace Veldrid.Vulkan2
 
             lock (QueueLock)
             {
-                cl.SubmitToQueue(_deviceCreateState.MainQueue, vkFence, null);
+                _ = cl.SubmitToQueue(_deviceCreateState.MainQueue, vkFence, null, 0);
             }
         }
 
@@ -523,13 +523,13 @@ namespace Veldrid.Vulkan2
             }
         };
 
-        internal void EndAndSubmitCommands(VulkanCommandList cl)
+        internal VkSemaphore EndAndSubmitCommands(VulkanCommandList cl, VkPipelineStageFlags2 semaphoreStages = 0)
         {
             cl.End();
 
             lock (QueueLock)
             {
-                cl.SubmitToQueue(_deviceCreateState.MainQueue, null, s_returnClToPool);
+                return cl.SubmitToQueue(_deviceCreateState.MainQueue, null, s_returnClToPool, semaphoreStages);
             }
         }
 
@@ -1070,12 +1070,32 @@ namespace Veldrid.Vulkan2
 
             // TODO: need to sync to layout PRESENT_SRC_KHR before presenting
 
+            // transition all swapchain images into PRESENT_SRC layout
+            var cl = GetAndBeginCommandList();
+            foreach (ref var colorTarget in vkSwapchain.Framebuffer.CurrentFramebuffer.ColorTargetsArray.AsSpan())
+            {
+                var tex = Util.AssertSubtype<Texture, VulkanTexture>(colorTarget.Target);
+                cl.SyncResource(tex, new()
+                {
+                    Layout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                    BarrierMasks = new()
+                    {
+                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                        AccessMask = VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                    }
+                });
+            }
+            var semaphore = EndAndSubmitCommands(cl, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+
             var presentInfo = new VkPresentInfoKHR()
             {
                 sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                 swapchainCount = 1,
                 pSwapchains = &deviceSwapchain,
                 pImageIndices = &imageIndex,
+                // make sure we wait for the synchro commands
+                waitSemaphoreCount = 1,
+                pWaitSemaphores = &semaphore,
             };
 
             var presentLock = vkSwapchain.PresentQueueIndex == _deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx ? QueueLock : vkSwapchain.PresentLock;

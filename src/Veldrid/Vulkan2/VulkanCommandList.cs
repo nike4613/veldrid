@@ -201,11 +201,12 @@ namespace Veldrid.Vulkan2
             VkCommandBuffer MainCb,
             VkCommandBuffer SyncCb,
             VkSemaphore SyncSemaphore,
+            VkSemaphore MainCompleteSemaphore,
             Action<VulkanCommandList>? OnSubmitCompleted,
             bool FenceWasRented
             );
 
-        public void SubmitToQueue(VkQueue queue, VulkanFence? submitFence, Action<VulkanCommandList>? onSubmitCompleted)
+        public VkSemaphore SubmitToQueue(VkQueue queue, VulkanFence? submitFence, Action<VulkanCommandList>? onSubmitCompleted, VkPipelineStageFlags2 completionSemaphoreStages)
         {
             if (!_bufferEnded)
             {
@@ -222,7 +223,7 @@ namespace Veldrid.Vulkan2
 
             // now we want to do all of the actual submission work
             var syncToMainSem = Device.GetSemaphore();
-            var mainCompleteSem = Device.GetSemaphore();
+            var mainCompleteSem = completionSemaphoreStages != 0 ? Device.GetSemaphore() : default;
             var fence = submitFence is not null ? submitFence.DeviceFence : Device.GetSubmissionFence();
             var fenceWasRented = submitFence is null;
 
@@ -258,6 +259,13 @@ namespace Veldrid.Vulkan2
                     commandBuffer = syncCb,
                 };
 
+                var mainSemaphoreInfo = new VkSemaphoreSubmitInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                    semaphore = mainCompleteSem,
+                    stageMask = completionSemaphoreStages,
+                };
+
                 var mainCmdSubmitInfo = new VkCommandBufferSubmitInfo()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -282,6 +290,8 @@ namespace Veldrid.Vulkan2
                         pWaitSemaphoreInfos = &syncSemaphoreInfo,
                         commandBufferInfoCount = 1,
                         pCommandBufferInfos = &mainCmdSubmitInfo,
+                        signalSemaphoreInfoCount = completionSemaphoreStages != 0 ? 1u : 0u,
+                        pSignalSemaphoreInfos = &mainSemaphoreInfo,
                     },
                 ];
 
@@ -292,7 +302,7 @@ namespace Veldrid.Vulkan2
             }
 
             RefCount.Increment();
-            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, onSubmitCompleted, fenceWasRented));
+            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, mainCompleteSem, onSubmitCompleted, fenceWasRented));
 
             lock (_commandBufferListLock)
             {
@@ -300,6 +310,8 @@ namespace Veldrid.Vulkan2
                 // note: we don't need to add the syncCb here, because it's part of the FenceCompletionCallbackInfo registered above
                 _submittedStagingInfos.Add(cb, resourceInfo);
             }
+
+            return mainCompleteSem;
         }
 
         internal void OnSubmissionFenceCompleted(VkFence fence, in FenceCompletionCallbackInfo callbackInfo, bool errored)
@@ -331,6 +343,13 @@ namespace Veldrid.Vulkan2
                 else
                 {
                     // if the fence wasn't rented, it's part of a VulkanFence object, and the application may still care about its state
+                }
+
+                // return the semaphores
+                Device.ReturnSemaphore(callbackInfo.SyncSemaphore);
+                if (callbackInfo.MainCompleteSemaphore != VkSemaphore.NULL)
+                {
+                    Device.ReturnSemaphore(callbackInfo.MainCompleteSemaphore);
                 }
 
                 // recycle the staging info
@@ -422,6 +441,8 @@ namespace Veldrid.Vulkan2
             {
                 throw new VeldridException("CommandBuffer must have been started before End() may be called.");
             }
+
+            EmitQueuedSynchro(); // at the end of the CL, any queued synchronization needs to be emitted so we don't miss any
 
             _bufferBegun = false;
             _bufferEnded = true;
