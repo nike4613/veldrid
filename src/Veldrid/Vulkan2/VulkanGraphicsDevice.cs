@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -44,6 +45,9 @@ namespace Veldrid.Vulkan2
         private readonly List<VulkanBuffer> _availableStagingBuffers = new();
         private readonly List<VulkanTexture> _availableStagingTextures = new();
 
+        private readonly Dictionary<MappableResource, ResourceMapping> _mappedResources = new();
+        private readonly object _mappedResourcesLock = new();
+
         // optional functions
 
         // synchronization2
@@ -64,10 +68,9 @@ namespace Veldrid.Vulkan2
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, void> vkCmdDebugMarkerEndEXT;
         internal readonly unsafe delegate* unmanaged<VkCommandBuffer, VkDebugMarkerMarkerInfoEXT*, void> vkCmdDebugMarkerInsertEXT;
 
-
         public VkDevice Device => _deviceCreateState.Device;
         public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
-        public new VulkanResourceFactory ResourceFactory => (VulkanResourceFactory)ResourceFactory;
+        public new VulkanResourceFactory ResourceFactory => (VulkanResourceFactory)base.ResourceFactory;
 
         public string? DriverName { get; }
         public string? DriverInfo { get; }
@@ -487,7 +490,7 @@ namespace Veldrid.Vulkan2
             if (!_sharedCommandLists.TryTake(out var sharedList))
             {
                 var desc = new CommandListDescription() { Transient = true };
-                sharedList = (VulkanCommandList)ResourceFactory.CreateCommandList(desc);
+                sharedList = ResourceFactory.CreateCommandList(desc);
                 sharedList.Name = "GraphicsDevice Shared CommandList";
             }
 
@@ -537,7 +540,7 @@ namespace Veldrid.Vulkan2
             }
 
             uint newBufferSize = Math.Max(MinStagingBufferSize, size);
-            var buf =  (VulkanBuffer)ResourceFactory.CreateBuffer(
+            var buf =  ResourceFactory.CreateBuffer(
                 new BufferDescription(newBufferSize, BufferUsage.StagingWrite));
             buf.Name = "Staging Buffer (GraphicsDevice)";
             return buf;
@@ -575,7 +578,7 @@ namespace Veldrid.Vulkan2
 
             var texWidth = uint.Max(256, width);
             var texHeight = uint.Max(256, height);
-            var newTex = (VulkanTexture)ResourceFactory.CreateTexture(
+            var newTex = ResourceFactory.CreateTexture(
                 TextureDescription.Texture3D(texWidth, texHeight, depth, 1, format, TextureUsage.Staging));
             newTex.SetStagingDimensions(width, height, depth, format);
             newTex.Name = "Staging Texture (GraphicsDevice)";
@@ -758,92 +761,46 @@ namespace Veldrid.Vulkan2
             if (copySrcBuffer is not null)
             {
                 // note: we DON'T need an explicit flush here, because queue submission does so implicitly
-                // TODO: we DO still want a normal synchro though, so we want to update sync info for the staging write
+
+                // the buffer WAS written to though, make sure we note that
+                copySrcBuffer.SyncState = new()
+                {
+                    LastWriter = new()
+                    {
+                        AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                    },
+                    PerStageReaders = 0,
+                };
+
                 var cl = GetAndBeginCommandList();
                 cl.AddStagingResource(copySrcBuffer);
+                // then CopyBuffer will handle synchro in the CommandList itself
                 cl.CopyBuffer(copySrcBuffer, 0, vkBuffer, bufferOffsetInBytes, sizeInBytes);
                 EndAndSubmitCommands(cl);
             }
             else
             {
-                // TODO: vkFlushMappedMemoryRanges, then update sync info of buffer to include the host write
-            }
-        }
-
-        // TODO: currently, mapping a resource maps ALL subresources, even though the Veldrid API only asks for 1
-        private protected unsafe override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
-        {
-            VkMemoryBlock memoryBlock;
-            void* mappedPtr = null;
-            var rowPitch = 0u;
-            var depthPitch = 0u;
-
-            if (resource is VulkanBuffer buffer)
-            {
-                memoryBlock = buffer.Memory;
-            }
-            else
-            {
-                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
-                Util.GetMipLevelAndArrayLayer(tex, subresource, out var mipLevel, out var arrayLayer);
-
-                var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
-                memoryBlock = tex.Memory;
-                bufferOffsetInBytes += (uint)layout.offset;
-                rowPitch = (uint)layout.rowPitch;
-                depthPitch = (uint)layout.depthPitch;
-            }
-
-            if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
-            {
-                var atomSize = _deviceCreateState.PhysicalDeviceProperties.limits.nonCoherentAtomSize;
-                var mapOffset = memoryBlock.Offset + bufferOffsetInBytes;
-                var bindOffset = mapOffset / atomSize * atomSize;
-                var bindSize = (sizeInBytes + atomSize - 1) / atomSize * atomSize;
-
-                if (memoryBlock.IsPersistentMapped)
+                // not a staging buffer, we need to explicitly flush
+                var mappedRange = new VkMappedMemoryRange()
                 {
-                    mappedPtr = (byte*)memoryBlock.BaseMappedPointer + mapOffset;
-                }
-                else
+                    sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                    memory = vkBuffer.Memory.DeviceMemory,
+                    offset = 0,
+                    size = VK_WHOLE_SIZE,
+                };
+
+                VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
+
+                vkBuffer.SyncState = new()
                 {
-                    var result = vkMapMemory(Device, memoryBlock.DeviceMemory, bindOffset, bindSize, 0, &mappedPtr);
-                    if (result is not VkResult.VK_ERROR_MEMORY_MAP_FAILED)
+                    LastWriter = new()
                     {
-                        VulkanUtil.CheckResult(result);
-                    }
-                    else
-                    {
-                        ThrowMapFailedException(resource, subresource);
-                    }
-
-                    mappedPtr = (byte*)mappedPtr + (mapOffset - bindOffset);
-                }
-
-                // TODO: sync-to-host, then vkInvalidateMappedMemoryRanges
-            }
-
-            return new MappedResource(resource, mode, (nint)mappedPtr, bufferOffsetInBytes, sizeInBytes, subresource, rowPitch, depthPitch);
-        }
-
-        private protected override void UnmapCore(MappableResource resource, uint subresource)
-        {
-            VkMemoryBlock memoryBlock;
-            if (resource is VulkanBuffer buffer)
-            {
-                memoryBlock = buffer.Memory;
-            }
-            else
-            {
-                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
-                memoryBlock = tex.Memory;
-            }
-
-            // TODO: vkFlushMappedMemoryRanges, then update sync info for a host write
-
-            if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL && !memoryBlock.IsPersistentMapped)
-            {
-                vkUnmapMemory(Device, memoryBlock.DeviceMemory);
+                        AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                    },
+                    PerStageReaders = 0,
+                };
             }
         }
 
@@ -859,8 +816,6 @@ namespace Veldrid.Vulkan2
             {
                 // staging buffer, persistent-mapped VkBuffer, not an image
                 UpdateStagingTexture(tex, source, x, y, z, width, height, depth, mipLevel, arrayLayer);
-
-                // TODO: vkFlushMappedMemoryRanges, then update sync info for a host write
             }
             else
             {
@@ -869,7 +824,6 @@ namespace Veldrid.Vulkan2
                 // use the helper directly to avoid an unnecessary synchronization op to device memory
                 UpdateStagingTexture(stagingTex, source, 0, 0, 0, width, height, depth, 0, 0);
                 // a queue submit implicitly synchronizes host->device, which normally requires the flush
-                // TODO: we DO want to mark stagingTex as having been written-to though. That should probably be done in UpdateStagingTexture though
 
                 var cl = GetAndBeginCommandList();
                 cl.AddStagingResource(stagingTex);
@@ -900,6 +854,200 @@ namespace Veldrid.Vulkan2
                 (uint)layout.rowPitch, (uint)layout.depthPitch,
                 width, height, depth,
                 tex.Format);
+
+            tex.SyncState = new()
+            {
+                LastWriter = new()
+                {
+                    AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
+                    StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                },
+                PerStageReaders = 0,
+            };
+        }
+
+
+        // TODO: currently, mapping a resource maps ALL subresources, even though the Veldrid API only asks for 1
+        private protected unsafe override MappedResource MapCore(MappableResource resource, uint bufferOffsetInBytes, uint sizeInBytes, MapMode mode, uint subresource)
+        {
+            VkMemoryBlock memoryBlock;
+            ISynchronizedResource syncResource;
+            void* mappedPtr = null;
+            var rowPitch = 0u;
+            var depthPitch = 0u;
+
+            if (resource is VulkanBuffer buffer)
+            {
+                syncResource = buffer;
+                memoryBlock = buffer.Memory;
+            }
+            else
+            {
+                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
+                syncResource = tex;
+                Util.GetMipLevelAndArrayLayer(tex, subresource, out var mipLevel, out var arrayLayer);
+
+                var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
+                memoryBlock = tex.Memory;
+                bufferOffsetInBytes += (uint)layout.offset;
+                rowPitch = (uint)layout.rowPitch;
+                depthPitch = (uint)layout.depthPitch;
+            }
+
+            if (memoryBlock.DeviceMemory != VkDeviceMemory.NULL)
+            {
+                var mapOffset = memoryBlock.Offset + bufferOffsetInBytes;
+
+                ResourceMapping? mapping;
+                lock (_mappedResourcesLock)
+                {
+                    if (_mappedResources.TryGetValue(resource, out mapping))
+                    {
+                        // mapping already exists, update the mode and increment
+                        mapping.RefCount.Increment();
+                        mapping.UpdateMode(mode);
+                    }
+                    else
+                    {
+                        // need to create a new mapping
+                        if (memoryBlock.IsPersistentMapped)
+                        {
+                            mappedPtr = (byte*)memoryBlock.BaseMappedPointer + mapOffset;
+                        }
+                        else
+                        {
+                            var atomSize = _deviceCreateState.PhysicalDeviceProperties.limits.nonCoherentAtomSize;
+                            var bindOffset = mapOffset / atomSize * atomSize;
+                            var bindSize = (sizeInBytes + atomSize - 1) / atomSize * atomSize;
+
+                            var result = vkMapMemory(Device, memoryBlock.DeviceMemory, bindOffset, bindSize, 0, &mappedPtr);
+                            if (result is not VkResult.VK_ERROR_MEMORY_MAP_FAILED)
+                            {
+                                VulkanUtil.CheckResult(result);
+                            }
+                            else
+                            {
+                                ThrowMapFailedException(resource, subresource);
+                            }
+
+                            mappedPtr = (byte*)mappedPtr + (mapOffset - bindOffset);
+                        }
+
+                        // and an associated resource
+                        mapping = new(this, syncResource, memoryBlock);
+                        _mappedResources.Add(resource, mapping);
+                    }
+                }
+
+                if ((mode & MapMode.Read) != 0)
+                {
+                    // TODO: we need to sync-to-host here, and wait for that
+                }
+
+                var mappedRange = new VkMappedMemoryRange()
+                {
+                    sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                    memory = memoryBlock.DeviceMemory,
+                    offset = 0,
+                    size = VK_WHOLE_SIZE,
+                };
+
+                VulkanUtil.CheckResult(vkInvalidateMappedMemoryRanges(Device, 1, &mappedRange));
+            }
+
+            return new MappedResource(resource, mode, (nint)mappedPtr, bufferOffsetInBytes, sizeInBytes, subresource, rowPitch, depthPitch);
+        }
+
+        private sealed class ResourceMapping : Vulkan.IResourceRefCountTarget
+        {
+            public readonly VulkanGraphicsDevice Device;
+            public readonly ISynchronizedResource Resource;
+            public readonly VkMemoryBlock MemoryBlock;
+            public Vulkan.ResourceRefCount RefCount { get; }
+
+            private int _mode;
+            public MapMode Mode => (MapMode)(byte)Volatile.Read(ref _mode);
+
+            public ResourceMapping(VulkanGraphicsDevice device, ISynchronizedResource resource, VkMemoryBlock memoryBlock)
+            {
+                Device = device;
+                Resource = resource;
+                MemoryBlock = memoryBlock;
+                RefCount = new(this);
+                resource.RefCount.Increment();
+            }
+
+            public void UpdateMode(MapMode mode)
+            {
+                int oldMode, newMode;
+                do
+                {
+                    oldMode = Volatile.Read(ref _mode);
+                    newMode = oldMode | (byte)mode;
+                }
+                while (Interlocked.CompareExchange(ref _mode, newMode, oldMode) != oldMode);
+            }
+
+            // RefZeroed corresponds to us needing to unmap, but ONLY to unmap. Sync is always done independently, because it may need to happen multiple times.
+            public void RefZeroed()
+            {
+                if (MemoryBlock.DeviceMemory != VkDeviceMemory.NULL && !MemoryBlock.IsPersistentMapped)
+                {
+                    vkUnmapMemory(Device.Device, MemoryBlock.DeviceMemory);
+                }
+
+                Resource.RefCount.Decrement();
+            }
+        }
+
+        private protected unsafe override void UnmapCore(MappableResource resource, uint subresource)
+        {
+            VkMemoryBlock memoryBlock;
+            ref SyncState syncState = ref Unsafe.NullRef<SyncState>();
+            if (resource is VulkanBuffer buffer)
+            {
+                memoryBlock = buffer.Memory;
+                syncState = ref buffer.SyncState;
+            }
+            else
+            {
+                var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
+                memoryBlock = tex.Memory;
+                syncState = ref tex.SyncState;
+            }
+
+            lock (_mappedResourcesLock)
+            {
+                if (_mappedResources.TryGetValue(resource, out var mapping))
+                {
+                    if ((mapping.Mode & MapMode.Write) != 0)
+                    {
+                        // the mapping is mapped with write access, so we should flush it
+                        var mappedRange = new VkMappedMemoryRange()
+                        {
+                            sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                            memory = memoryBlock.DeviceMemory,
+                            offset = 0,
+                            size = VK_WHOLE_SIZE,
+                        };
+
+                        VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
+
+                        syncState = new()
+                        {
+                            PerStageReaders = 0,
+                            LastWriter = new()
+                            {
+                                AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
+                                StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                            }
+                        };
+                    }
+
+                    // AFTER syncing, decrement to (possibly) unmap
+                    mapping.RefCount.Decrement();
+                }
+            }
         }
 
         private protected override void SwapBuffersCore(Swapchain swapchain)
