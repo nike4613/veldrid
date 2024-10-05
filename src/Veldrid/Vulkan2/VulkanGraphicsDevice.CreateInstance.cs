@@ -216,6 +216,8 @@ namespace Veldrid.Vulkan2
                     $"{layerPrefix}({objectType.ToString().Replace("VK_DEBUG_REPORT_OBJECT_TYPE_", "")}) " +
                     $"{message}";
 
+                Debug.WriteLine(validationMsg);
+
                 if (flags == VkDebugReportFlagsEXT.VK_DEBUG_REPORT_ERROR_BIT_EXT)
                 {
                     VulkanUtil.SetDebugCallbackException(new VeldridException("A Vulkan validation error was encountered:\n"
@@ -223,8 +225,6 @@ namespace Veldrid.Vulkan2
                         + $"for object 0x{obj:X} at location 0x{location:X}"));
                     return 0;
                 }
-
-                Debug.WriteLine(validationMsg);
                 return 0;
             }
         }

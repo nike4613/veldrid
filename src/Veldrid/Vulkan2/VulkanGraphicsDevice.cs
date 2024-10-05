@@ -73,6 +73,7 @@ namespace Veldrid.Vulkan2
         public VkDevice Device => _deviceCreateState.Device;
         public unsafe bool HasSetMarkerName => vkDebugMarkerSetObjectNameEXT is not null;
         public new VulkanResourceFactory ResourceFactory => (VulkanResourceFactory)base.ResourceFactory;
+        public VulkanDescriptorPoolManager DescriptorPoolManager => _descriptorPoolManager;
 
         public string? DriverName { get; }
         public string? DriverInfo { get; }

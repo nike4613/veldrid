@@ -393,7 +393,7 @@ namespace Veldrid.Vulkan2
                     "CommandList must be in its initial state, or End() must have been called, for Begin() to be valid to call.");
             }
 
-            if (_bufferEnded)
+            //if (_bufferEnded)
             {
                 _bufferEnded = false;
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Buffers;
 
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
@@ -10,6 +11,7 @@ using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkFormats = Veldrid.Vulkan.VkFormats;
+using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan2
@@ -671,14 +673,224 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override ResourceLayout CreateResourceLayout(in ResourceLayoutDescription description)
+        public unsafe override VulkanResourceLayout CreateResourceLayout(in ResourceLayoutDescription description)
         {
-            throw new NotImplementedException();
+            VkDescriptorSetLayout dsl = default;
+            try
+            {
+                var elements = description.Elements;
+                var types = new VkDescriptorType[elements.Length];
+                var stages = new VkShaderStageFlags[elements.Length];
+                var bindings = ArrayPool<VkDescriptorSetLayoutBinding>.Shared.Rent(elements.Length);
+
+                var dynamicBufferCount = 0;
+                var uniformBufferCount = 0u;
+                var uniformBufferDynamicCount = 0u;
+                var sampledImageCount = 0u;
+                var samplerCount = 0u;
+                var storageBufferCount = 0u;
+                var storageBufferDynamicCount = 0u;
+                var storageImageCount = 0u;
+
+                for (var i = 0u; i < elements.Length; i++)
+                {
+                    ref var element = ref elements[i];
+                    ref var binding = ref bindings[i];
+
+                    binding.binding = i;
+                    binding.descriptorCount = 1;
+                    var descriptorType = VkFormats.VdToVkDescriptorType(element.Kind, element.Options);
+                    binding.descriptorType = descriptorType;
+                    var shaderStages = VkFormats.VdToVkShaderStages(element.Stages);
+                    binding.stageFlags = shaderStages;
+
+                    types[i] = descriptorType;
+                    stages[i] = shaderStages;
+
+                    if ((element.Options & ResourceLayoutElementOptions.DynamicBinding) != 0)
+                    {
+                        dynamicBufferCount++;
+                    }
+
+                    switch (descriptorType)
+                    {
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLER:
+                            samplerCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                            sampledImageCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                            storageImageCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                            uniformBufferCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+                            uniformBufferDynamicCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                            storageBufferCount += 1;
+                            break;
+                        case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+                            storageBufferDynamicCount += 1;
+                            break;
+                    }
+                }
+
+                fixed (VkDescriptorSetLayoutBinding* pBindings = bindings)
+                {
+                    var createInfo = new VkDescriptorSetLayoutCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                        bindingCount = (uint)elements.Length,
+                        pBindings = pBindings
+                    };
+
+                    VulkanUtil.CheckResult(vkCreateDescriptorSetLayout(_gd.Device, &createInfo, null, &dsl));
+                }
+
+                ArrayPool<VkDescriptorSetLayoutBinding>.Shared.Return(bindings);
+
+                var resourceCounts = new DescriptorResourceCounts(
+                    uniformBufferCount, uniformBufferDynamicCount,
+                    sampledImageCount, samplerCount,
+                    storageBufferCount, storageBufferDynamicCount,
+                    storageImageCount);
+
+                var result = new VulkanResourceLayout(_gd, description, dsl, types, stages, resourceCounts, dynamicBufferCount);
+                dsl = default;
+                return result;
+            }
+            finally
+            {
+                if (dsl != VkDescriptorSetLayout.NULL)
+                {
+                    vkDestroyDescriptorSetLayout(_gd.Device, dsl, null);
+                }
+            }
         }
 
-        public override ResourceSet CreateResourceSet(in ResourceSetDescription description)
+        public unsafe override VulkanResourceSet CreateResourceSet(in ResourceSetDescription description)
         {
-            throw new NotImplementedException();
+            var layout = Util.AssertSubtype<ResourceLayout, VulkanResourceLayout>(description.Layout);
+            var resourceCounts = layout.ResourceCounts;
+
+            DescriptorAllocationToken allocToken = default;
+            VulkanResourceSet? result = null;
+            try
+            {
+                allocToken = _gd.DescriptorPoolManager.Allocate(resourceCounts, layout.DescriptorSetLayout);
+                result = new(_gd, description, allocToken);
+                allocToken = default;
+
+                var boundResources = description.BoundResources;
+
+                var descriptorWrites = ArrayPool<VkWriteDescriptorSet>.Shared.Rent(boundResources.Length);
+                var bufferInfos = ArrayPool<VkDescriptorBufferInfo>.Shared.Rent(boundResources.Length);
+                var imageInfos = ArrayPool<VkDescriptorImageInfo>.Shared.Rent(boundResources.Length);
+
+                fixed (VkWriteDescriptorSet* pDescriptorWrites = descriptorWrites)
+                fixed (VkDescriptorBufferInfo* pBufferInfos = bufferInfos)
+                fixed (VkDescriptorImageInfo* pImageInfos = imageInfos)
+                {
+                    for (var i = 0; i < boundResources.Length; i++)
+                    {
+                        var type = layout.DescriptorTypes[i];
+                        ref var descWrite = ref descriptorWrites[i];
+                        descWrite = new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                            dstSet = result.DescriptorSet,
+                            dstBinding = (uint)i,
+                            descriptorType = type,
+                            descriptorCount = 1,
+                        };
+
+                        switch (type)
+                        {
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+                            {
+                                var range = Util.GetBufferRange(boundResources[i], 0);
+                                var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(range.Buffer);
+                                bufferInfos[i] = new()
+                                {
+                                    buffer = buffer.DeviceBuffer,
+                                    offset = range.Offset,
+                                    range = range.SizeInBytes,
+                                };
+                                descWrite.pBufferInfo = pBufferInfos + i;
+                                result.RefCounts.Add(buffer.RefCount);
+                            }
+                            break;
+
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                            {
+                                var vdTexView = Util.GetTextureView(_gd, boundResources[i]);
+                                var texView = Util.AssertSubtype<TextureView, VulkanTextureView>(vdTexView);
+                                imageInfos[i] = new()
+                                {
+                                    imageView = texView.ImageView,
+                                    imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                };
+                                descWrite.pImageInfo = pImageInfos + i;
+                                result.RefCounts.Add(texView.RefCount);
+                                result.SampledTextures.Add(texView.Target);
+                            }
+                            break;
+
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                            {
+                                var vdTexView = Util.GetTextureView(_gd, boundResources[i]);
+                                var texView = Util.AssertSubtype<TextureView, VulkanTextureView>(vdTexView);
+                                imageInfos[i] = new()
+                                {
+                                    imageView = texView.ImageView,
+                                    imageLayout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
+                                };
+                                descWrite.pImageInfo = pImageInfos + i;
+                                result.RefCounts.Add(texView.RefCount);
+                                result.StorageTextures.Add(texView.Target);
+                            }
+                            break;
+
+                            case VkDescriptorType.VK_DESCRIPTOR_TYPE_SAMPLER:
+                            {
+                                var sampler = Util.AssertSubtype<Sampler, VulkanSampler>(boundResources[i].GetSampler());
+                                imageInfos[i] = new()
+                                {
+                                    sampler = sampler.DeviceSampler,
+                                };
+                                descWrite.pImageInfo = pImageInfos + i;
+                                result.RefCounts.Add(sampler.RefCount);
+                            }
+                            break;
+                        }
+                    }
+
+                    vkUpdateDescriptorSets(_gd.Device, (uint)boundResources.Length, pDescriptorWrites, 0, null);
+                }
+
+                ArrayPool<VkWriteDescriptorSet>.Shared.Return(descriptorWrites);
+                ArrayPool<VkDescriptorBufferInfo>.Shared.Return(bufferInfos);
+                ArrayPool<VkDescriptorImageInfo>.Shared.Return(imageInfos);
+
+                var realResult = result;
+                result = null;
+                return realResult;
+            }
+            finally
+            {
+                if (allocToken.Set != VkDescriptorSet.NULL)
+                {
+                    _gd.DescriptorPoolManager.Free(allocToken, resourceCounts);
+                }
+
+                result?.Dispose();
+            }
         }
 
         public override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
