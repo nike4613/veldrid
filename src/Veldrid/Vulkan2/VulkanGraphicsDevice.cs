@@ -1068,8 +1068,6 @@ namespace Veldrid.Vulkan2
             var deviceSwapchain = vkSwapchain.DeviceSwapchain;
             var imageIndex = vkSwapchain.ImageIndex;
 
-            // TODO: need to sync to layout PRESENT_SRC_KHR before presenting
-
             // transition all swapchain images into PRESENT_SRC layout
             var cl = GetAndBeginCommandList();
             foreach (ref var colorTarget in vkSwapchain.Framebuffer.CurrentFramebuffer.ColorTargetsArray.AsSpan())

@@ -621,7 +621,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public unsafe override Swapchain CreateSwapchain(in SwapchainDescription description)
+        public unsafe override VulkanSwapchain CreateSwapchain(in SwapchainDescription description)
         {
             VkSurfaceKHR surface = default;
 
@@ -639,14 +639,36 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)
+        public unsafe override VulkanShader CreateShader(in ShaderDescription description)
         {
-            throw new NotImplementedException();
-        }
+            ValidateShader(description);
 
-        public override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
-        {
-            throw new NotImplementedException();
+            VkShaderModule shader = default;
+            try
+            {
+                fixed (byte* codePtr = description.ShaderBytes)
+                {
+                    var createInfo = new VkShaderModuleCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                        codeSize = (nuint)description.ShaderBytes.Length,
+                        pCode = (uint*)codePtr,
+                    };
+
+                    VulkanUtil.CheckResult(vkCreateShaderModule(_gd.Device, &createInfo, null, &shader));
+                }
+
+                var result = new VulkanShader(_gd, description, shader);
+                shader = default;
+                return result;
+            }
+            finally
+            {
+                if (shader != VkShaderModule.NULL)
+                {
+                    vkDestroyShaderModule(_gd.Device, shader, null);
+                }
+            }
         }
 
         public override ResourceLayout CreateResourceLayout(in ResourceLayoutDescription description)
@@ -659,7 +681,12 @@ namespace Veldrid.Vulkan2
             throw new NotImplementedException();
         }
 
-        public override Shader CreateShader(in ShaderDescription description)
+        public override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)
         {
             throw new NotImplementedException();
         }
