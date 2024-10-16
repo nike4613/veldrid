@@ -33,8 +33,6 @@ namespace Veldrid.Vulkan2
             }
             surfaceExtensions.AddRange(GetSurfaceExtensions(availInstanceExtensions));
 
-            dcs.HasDeviceProperties2Ext = availInstanceExtensions.Contains(CommonStrings.VK_KHR_get_physical_device_properties2);
-
             // now collect that information into the final list
 
             var fixedStringHolder = new List<FixedUtf8String>();
@@ -88,6 +86,12 @@ namespace Veldrid.Vulkan2
                         dcs.HasKhrValidationLayer = true;
                         instanceLayerPtrs.Add(CommonStrings.KhronosValidationLayerName);
                     }
+                }
+
+                if (availInstanceExtensions.Contains(CommonStrings.VK_KHR_get_physical_device_properties2))
+                {
+                    dcs.HasDeviceProperties2Ext = true;
+                    instanceExtensionPtrs.Add(CommonStrings.VK_KHR_get_physical_device_properties2);
                 }
 
                 VkInstance instance;

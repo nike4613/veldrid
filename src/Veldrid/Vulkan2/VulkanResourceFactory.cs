@@ -1,18 +1,16 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Buffers;
-
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using TerraFX.Interop.Vulkan;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
+
+using static TerraFX.Interop.Vulkan.Vulkan;
+using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
+using VkFormats = Veldrid.Vulkan.VkFormats;
 using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
-using static TerraFX.Interop.Vulkan.Vulkan;
+using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 
 namespace Veldrid.Vulkan2
 {
@@ -893,9 +891,462 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
+        private unsafe VkPipelineLayout CreatePipelineLayout(ResourceLayout[] resourceLayouts)
         {
-            throw new NotImplementedException();
+            var dsls = ArrayPool<VkDescriptorSetLayout>.Shared.Rent(resourceLayouts.Length);
+            for (var i = 0; i < resourceLayouts.Length; i++)
+            {
+                dsls[i] = Util.AssertSubtype<ResourceLayout, VulkanResourceLayout>(resourceLayouts[i]).DescriptorSetLayout;
+            }
+
+            VkPipelineLayout result;
+
+            fixed (VkDescriptorSetLayout* pDsls = dsls)
+            {
+                var createInfo = new VkPipelineLayoutCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                    setLayoutCount = (uint)resourceLayouts.Length,
+                    pSetLayouts = pDsls,
+                };
+
+                VulkanUtil.CheckResult(vkCreatePipelineLayout(_gd.Device, &createInfo, null, &result));
+            }
+
+            ArrayPool<VkDescriptorSetLayout>.Shared.Return(dsls);
+
+            return result;
+        }
+
+        public unsafe override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
+        {
+            ValidateGraphicsPipeline(description);
+
+            VkPipeline pipeline = default;
+            VkPipelineLayout pipelineLayout = default;
+            VkRenderPass renderPassTemplate = default;
+
+            try
+            {
+                VkGraphicsPipelineCreateInfo pipelineCreateInfo = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                };
+
+                // Pipeline Layout
+                pipelineLayout = CreatePipelineLayout(description.ResourceLayouts);
+                pipelineCreateInfo.layout = pipelineLayout;
+
+                // Multisample
+                var vkSampleCount = VkFormats.VdToVkSampleCount(description.Outputs.SampleCount);
+                var multisampleCI = new VkPipelineMultisampleStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                    rasterizationSamples = vkSampleCount,
+                    alphaToCoverageEnable = (VkBool32)description.BlendState.AlphaToCoverageEnabled
+                };
+
+                pipelineCreateInfo.pMultisampleState = &multisampleCI;
+
+                // Input Assembly
+                var inputAssemblyCI = new VkPipelineInputAssemblyStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                    topology = VkFormats.VdToVkPrimitiveTopology(description.PrimitiveTopology)
+                };
+
+                pipelineCreateInfo.pInputAssemblyState = &inputAssemblyCI;
+
+                // Fake Render Pass (for compat)
+                if (!_gd._deviceCreateState.HasDynamicRendering) // if dynamic rendering is available, we don't actually need a render pass
+                {
+                    // TODO: a lot of this will probably be fuplicated into the non-Dynamic VulkanFramebuffer
+                    var outputDesc = description.Outputs;
+                    var colorAttDescs = outputDesc.ColorAttachments.AsSpan();
+
+                    var attachments = ArrayPool<VkAttachmentDescription>.Shared.Rent(colorAttDescs.Length + 1); // + 1 for the depth attachment, if we have it
+                    var attachmentRefs = ArrayPool<VkAttachmentReference>.Shared.Rent(colorAttDescs.Length + 1);
+
+                    var attachmentCount = colorAttDescs.Length;
+                    for (var i = 0; i < colorAttDescs.Length; i++)
+                    {
+                        var colorDesc = colorAttDescs[i];
+                        attachments[i] = new()
+                        {
+                            format = VkFormats.VdToVkPixelFormat(colorDesc.Format, default),
+                            samples = vkSampleCount,
+                            loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                            storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
+                            stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                            stencilStoreOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
+                            initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED,
+                            finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        };
+                        attachmentRefs[i] = new()
+                        {
+                            attachment = (uint)i,
+                            layout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                        };
+                    }
+
+                    var hasDepth = false;
+                    if (outputDesc.DepthAttachment is { } depthAtt)
+                    {
+                        var depthFormat = depthAtt.Format;
+                        var hasStencil = FormatHelpers.IsStencilFormat(depthFormat);
+
+                        attachments[attachmentCount] = new()
+                        {
+                            format = VkFormats.VdToVkPixelFormat(depthFormat, TextureUsage.DepthStencil),
+                            samples = vkSampleCount,
+                            loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                            storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
+                            stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                            stencilStoreOp = hasStencil ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE : VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                            initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED,
+                            finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        };
+
+                        attachmentRefs[attachmentCount] = new()
+                        {
+                            attachment = (uint)attachmentCount,
+                            layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        };
+
+                        hasDepth = true;
+                        attachmentCount++;
+                    }
+
+                    fixed (VkAttachmentDescription* pAttachments = attachments)
+                    fixed (VkAttachmentReference* pAttachmentRefs = attachmentRefs)
+                    {
+                        var subpass = new VkSubpassDescription()
+                        {
+                            pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            colorAttachmentCount = (uint)colorAttDescs.Length,
+                            pColorAttachments = pAttachmentRefs,
+                        };
+
+                        if (hasDepth)
+                        {
+                            subpass.pDepthStencilAttachment = pAttachmentRefs + colorAttDescs.Length;
+                        }
+
+                        var subpassDep = new VkSubpassDependency()
+                        {
+                            srcSubpass = VK_SUBPASS_EXTERNAL,
+                            srcStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            dstStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            dstAccessMask = VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        };
+
+                        var renderPassCreateInfo = new VkRenderPassCreateInfo()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                            attachmentCount = (uint)attachmentCount,
+                            pAttachments = pAttachments,
+                            subpassCount = 1,
+                            pSubpasses = &subpass,
+                            dependencyCount = 1,
+                            pDependencies = &subpassDep,
+                        };
+
+                        VulkanUtil.CheckResult(vkCreateRenderPass(_gd.Device, &renderPassCreateInfo, null, &renderPassTemplate));
+                    }
+
+                    ArrayPool<VkAttachmentDescription>.Shared.Return(attachments);
+                    ArrayPool<VkAttachmentReference>.Shared.Return(attachmentRefs);
+
+                    pipelineCreateInfo.renderPass = renderPassTemplate;
+                }
+
+                // Rasterizer State
+                var rasterDesc = description.RasterizerState;
+                var rasterizerCreateInfo = new VkPipelineRasterizationStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                    cullMode = VkFormats.VdToVkCullMode(rasterDesc.CullMode),
+                    polygonMode = VkFormats.VdToVkPolygonMode(rasterDesc.FillMode),
+                    depthClampEnable = (VkBool32)!rasterDesc.DepthClipEnabled,
+                    frontFace = rasterDesc.FrontFace is FrontFace.Clockwise ? VkFrontFace.VK_FRONT_FACE_CLOCKWISE : VkFrontFace.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                    lineWidth = 1f,
+                };
+                pipelineCreateInfo.pRasterizationState = &rasterizerCreateInfo;
+
+                // Dynamic State
+                var pDynamicStates = stackalloc VkDynamicState[2]
+                {
+                    VkDynamicState.VK_DYNAMIC_STATE_VIEWPORT,
+                    VkDynamicState.VK_DYNAMIC_STATE_SCISSOR,
+                };
+                var dynamicStateCreateInfo = new VkPipelineDynamicStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                    dynamicStateCount = 2,
+                    pDynamicStates = pDynamicStates,
+                };
+
+                pipelineCreateInfo.pDynamicState = &dynamicStateCreateInfo;
+
+                // Depth Stencil State
+                var dssDesc = description.DepthStencilState;
+                var dssCreateInfo = new VkPipelineDepthStencilStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                    depthWriteEnable = (VkBool32)dssDesc.DepthWriteEnabled,
+                    depthTestEnable = (VkBool32)dssDesc.DepthTestEnabled,
+                    depthCompareOp = VkFormats.VdToVkCompareOp(dssDesc.DepthComparison),
+                    stencilTestEnable = (VkBool32)dssDesc.StencilTestEnabled,
+                    front = new VkStencilOpState()
+                    {
+                        failOp = VkFormats.VdToVkStencilOp(dssDesc.StencilFront.Fail),
+                        passOp = VkFormats.VdToVkStencilOp(dssDesc.StencilFront.Pass),
+                        depthFailOp = VkFormats.VdToVkStencilOp(dssDesc.StencilFront.DepthFail),
+                        compareOp = VkFormats.VdToVkCompareOp(dssDesc.StencilFront.Comparison),
+                        compareMask = dssDesc.StencilReadMask,
+                        writeMask = dssDesc.StencilWriteMask,
+                        reference = dssDesc.StencilReference
+                    },
+                    back = new VkStencilOpState()
+                    {
+                        failOp = VkFormats.VdToVkStencilOp(dssDesc.StencilBack.Fail),
+                        passOp = VkFormats.VdToVkStencilOp(dssDesc.StencilBack.Pass),
+                        depthFailOp = VkFormats.VdToVkStencilOp(dssDesc.StencilBack.DepthFail),
+                        compareOp = VkFormats.VdToVkCompareOp(dssDesc.StencilBack.Comparison),
+                        compareMask = dssDesc.StencilReadMask,
+                        writeMask = dssDesc.StencilWriteMask,
+                        reference = dssDesc.StencilReference
+                    }
+                };
+
+                pipelineCreateInfo.pDepthStencilState = &dssCreateInfo;
+
+                // Viewport State
+                var viewportStateCreateInfo = new VkPipelineViewportStateCreateInfo()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                    viewportCount = 1,
+                    scissorCount = 1,
+                };
+
+                pipelineCreateInfo.pViewportState = &viewportStateCreateInfo;
+
+                // Blend State
+                var blendAttachmentCount = description.BlendState.AttachmentStates.Length;
+                var blendAttachments = ArrayPool<VkPipelineColorBlendAttachmentState>.Shared.Rent(blendAttachmentCount);
+                for (var i = 0; i < blendAttachmentCount; i++)
+                {
+                    var desc = description.BlendState.AttachmentStates[i];
+                    blendAttachments[i] = new()
+                    {
+                        srcColorBlendFactor = VkFormats.VdToVkBlendFactor(desc.SourceColorFactor),
+                        dstColorBlendFactor = VkFormats.VdToVkBlendFactor(desc.DestinationColorFactor),
+                        colorBlendOp = VkFormats.VdToVkBlendOp(desc.ColorFunction),
+
+                        srcAlphaBlendFactor = VkFormats.VdToVkBlendFactor(desc.SourceAlphaFactor),
+                        dstAlphaBlendFactor = VkFormats.VdToVkBlendFactor(desc.DestinationAlphaFactor),
+                        alphaBlendOp = VkFormats.VdToVkBlendOp(desc.AlphaFunction),
+
+                        blendEnable = (VkBool32)desc.BlendEnabled,
+                        colorWriteMask = VkFormats.VdToVkColorWriteMask(desc.ColorWriteMask.GetOrDefault()),
+                    };
+                }
+
+                // Vertex Input State
+                var inputDescs = description.ShaderSet.VertexLayouts.AsSpan();
+                var bindingCount = (uint)inputDescs.Length;
+                var attribCount = 0u;
+                for (var i = 0; i < inputDescs.Length; i++)
+                {
+                    attribCount += (uint)inputDescs[i].Elements.Length;
+                }
+
+                var bindingDescs = ArrayPool<VkVertexInputBindingDescription>.Shared.Rent((int)bindingCount);
+                var attribDescs = ArrayPool<VkVertexInputAttributeDescription>.Shared.Rent((int)attribCount);
+
+                var targetIndex = 0;
+                var targetLocation = 0;
+                for (var binding = 0; binding < inputDescs.Length; binding++)
+                {
+                    var inputDesc = inputDescs[binding];
+                    bindingDescs[binding] = new()
+                    {
+                        binding = (uint)binding,
+                        inputRate = inputDesc.InstanceStepRate != 0 ? VkVertexInputRate.VK_VERTEX_INPUT_RATE_INSTANCE : VkVertexInputRate.VK_VERTEX_INPUT_RATE_VERTEX,
+                        stride = inputDesc.Stride,
+                    };
+
+                    // TODO: if InstanceStepRate > 1, try to use VK_KHR/EXT_vertex_attribute_divisor
+
+                    var currentOffset = 0u;
+                    for (var location = 0; location < inputDesc.Elements.Length; location++)
+                    {
+                        var element = inputDesc.Elements[location];
+
+                        attribDescs[targetIndex] = new()
+                        {
+                            format = VkFormats.VdToVkVertexElementFormat(element.Format),
+                            binding = (uint)binding,
+                            location = (uint)(targetLocation + location),
+                            offset = element.Offset != 0 ? element.Offset : currentOffset,
+                        };
+
+                        targetIndex++;
+                        currentOffset += FormatSizeHelpers.GetSizeInBytes(element.Format);
+                    }
+
+                    targetLocation += inputDesc.Elements.Length;
+                }
+
+                // Set up shader specialization data
+                var specializationDataSize = 0u;
+                byte[]? specializationData = null;
+                var specializationMapCount = 0u;
+                VkSpecializationMapEntry[]? specializationMapEntries = null;
+                if (description.ShaderSet.Specializations is { } specDescs)
+                {
+                    foreach (var spec in specDescs)
+                    {
+                        specializationDataSize += VkFormats.GetSpecializationConstantSize(spec.Type);
+                    }
+
+                    specializationData = ArrayPool<byte>.Shared.Rent((int)specializationDataSize);
+
+                    specializationMapCount = (uint)specDescs.Length;
+                    specializationMapEntries = ArrayPool<VkSpecializationMapEntry>.Shared.Rent(specDescs.Length);
+
+                    var offset = 0u;
+                    for (var i = 0; i < specDescs.Length; i++)
+                    {
+                        var data = specDescs[i].Data;
+                        var size = VkFormats.GetSpecializationConstantSize(specDescs[i].Type);
+                        MemoryMarshal.AsBytes(new Span<ulong>(ref data)).CopyTo(specializationData.AsSpan().Slice((int)offset));
+                        specializationMapEntries[i] = new()
+                        {
+                            constantID = specDescs[i].ID,
+                            offset = offset,
+                            size = size,
+                        };
+                        offset += size;
+                    }
+                }
+
+                // Allocate shader create info array
+                var shaderStages = ArrayPool<VkPipelineShaderStageCreateInfo>.Shared.Rent(description.ShaderSet.Shaders.Length);
+
+                var stringHolder = new List<FixedUtf8String>();
+
+                fixed (VkPipelineColorBlendAttachmentState* pBlendAttachments = blendAttachments)
+                fixed (VkVertexInputBindingDescription* pBindingDescs = bindingDescs)
+                fixed (VkVertexInputAttributeDescription* pAttribDescs = attribDescs)
+                fixed (byte* pSpecializationData = specializationData)
+                fixed (VkSpecializationMapEntry* pSpecializationMapEntries = specializationMapEntries)
+                fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
+                {
+                    // actually initialize the blend state CI
+                    var blendStateCreateInfo = new VkPipelineColorBlendStateCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                        attachmentCount = (uint)blendAttachmentCount,
+                        pAttachments = pBlendAttachments,
+                    };
+
+                    var blendFactor = description.BlendState.BlendFactor;
+                    blendStateCreateInfo.blendConstants[0] = blendFactor.R;
+                    blendStateCreateInfo.blendConstants[1] = blendFactor.G;
+                    blendStateCreateInfo.blendConstants[2] = blendFactor.B;
+                    blendStateCreateInfo.blendConstants[3] = blendFactor.A;
+
+                    pipelineCreateInfo.pColorBlendState = &blendStateCreateInfo;
+
+                    // and do the same for the vertex input CI
+                    var vertexInputCreateInfo = new VkPipelineVertexInputStateCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                        vertexBindingDescriptionCount = bindingCount,
+                        pVertexBindingDescriptions = pBindingDescs,
+                        vertexAttributeDescriptionCount = attribCount,
+                        pVertexAttributeDescriptions = pAttribDescs,
+                    };
+
+                    pipelineCreateInfo.pVertexInputState = &vertexInputCreateInfo;
+
+                    // shader stages
+                    var specializationInfo = new VkSpecializationInfo()
+                    {
+                        dataSize = specializationDataSize,
+                        pData = pSpecializationData,
+                        mapEntryCount = specializationMapCount,
+                        pMapEntries = pSpecializationMapEntries,
+                    };
+                    for (int i = 0; i < description.ShaderSet.Shaders.Length; i++)
+                    {
+                        var shader = description.ShaderSet.Shaders[i];
+                        var vkShader = Util.AssertSubtype<Shader, VulkanShader>(shader);
+
+                        FixedUtf8String name;
+                        if (vkShader.EntryPoint is "main")
+                        {
+                            name = Vulkan.CommonStrings.main;
+                        }
+                        else
+                        {
+                            // this MUST be added to the list so that the GC cannot collect it out from under us
+                            stringHolder.Add(name = new FixedUtf8String(vkShader.EntryPoint));
+                        }
+
+                        pShaderStages[i] = new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                            module = vkShader.ShaderModule,
+                            stage = VkFormats.VdToVkShaderStages(vkShader.Stage),
+                            pSpecializationInfo = &specializationInfo,
+                            pName = name
+                        };
+                    }
+
+                    pipelineCreateInfo.stageCount = (uint)description.ShaderSet.Shaders.Length;
+                    pipelineCreateInfo.pStages = pShaderStages;
+
+                    // and now everything is set up so that we can create our pipeline
+                    VulkanUtil.CheckResult(vkCreateGraphicsPipelines(_gd.Device, default, 1, &pipelineCreateInfo, null, &pipeline));
+                }
+
+                GC.KeepAlive(stringHolder);
+
+                ArrayPool<VkPipelineColorBlendAttachmentState>.Shared.Return(blendAttachments);
+                ArrayPool<VkVertexInputBindingDescription>.Shared.Return(bindingDescs);
+                ArrayPool<VkVertexInputAttributeDescription>.Shared.Return(attribDescs);
+                ArrayPool<VkPipelineShaderStageCreateInfo>.Shared.Return(shaderStages);
+                if (specializationData is not null)
+                {
+                    ArrayPool<byte>.Shared.Return(specializationData);
+                }
+                if (specializationMapEntries is not null)
+                {
+                    ArrayPool<VkSpecializationMapEntry>.Shared.Return(specializationMapEntries);
+                }
+
+                // we now have our Vulkan pipeline object, lets create our wrapper object
+                return new VulkanPipeline(_gd, description, ref pipeline, ref pipelineLayout);
+            }
+            finally
+            {
+                if (pipeline != VkPipeline.NULL)
+                {
+                    vkDestroyPipeline(_gd.Device, pipeline, null);
+                }
+
+                if (pipelineLayout != VkPipelineLayout.NULL)
+                {
+                    vkDestroyPipelineLayout(_gd.Device, pipelineLayout, null);
+                }
+
+                if (renderPassTemplate != VkRenderPass.NULL)
+                {
+                    vkDestroyRenderPass(_gd.Device, renderPassTemplate, null);
+                }
+            }
         }
 
         public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)

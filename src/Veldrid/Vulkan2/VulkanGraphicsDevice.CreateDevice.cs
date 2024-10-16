@@ -78,6 +78,7 @@ namespace Veldrid.Vulkan2
                 dcs.PhysicalDevice = SelectPhysicalDevice(dcs.Instance, out dcs.PhysicalDeviceProperties);
                 vkGetPhysicalDeviceFeatures(dcs.PhysicalDevice, &dcs.PhysicalDeviceFeatures);
                 vkGetPhysicalDeviceMemoryProperties(dcs.PhysicalDevice, &dcs.PhysicalDeviceMemoryProperties);
+                // TODO: vkGetPhysicalDeviceFeatures2 to properly identify which features are available
 
                 dcs.QueueFamilyInfo = IdentifyQueueFamilies(dcs.PhysicalDevice, dcs.Surface);
 
@@ -277,6 +278,7 @@ namespace Veldrid.Vulkan2
             {
                 VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(dcs.PhysicalDevice, null, &numDeviceExtensions, pExtensionProps));
 
+                // TODO: all of these version-gated options are technically conditional on a physical device feature. We should be using that instead.
                 dcs.HasMemReqs2Ext = dcs.ApiVersion >= new VkVersion(1, 1, 0);
                 dcs.HasMaintenance1Ext = dcs.ApiVersion >= new VkVersion(1, 1, 0);
                 dcs.HasDedicatedAllocationExt = dcs.ApiVersion >= new VkVersion(1, 1, 0);
@@ -365,6 +367,19 @@ namespace Veldrid.Vulkan2
                         enabledExtensionCount = activeExtensionCount,
                         ppEnabledExtensionNames = (sbyte**)pActiveExtensions,
                     };
+
+                    if (dcs.HasDynamicRendering)
+                    {
+                        // make sure we enable dynamic rendering
+                        var dynamicRenderingFeatures = new VkPhysicalDeviceDynamicRenderingFeatures()
+                        {
+                            sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+                            pNext = deviceCreateInfo.pNext,
+                            dynamicRendering = (VkBool32)true,
+                        };
+
+                        deviceCreateInfo.pNext = &dynamicRenderingFeatures;
+                    }
 
                     VulkanUtil.CheckResult(vkCreateDevice(dcs.PhysicalDevice, &deviceCreateInfo, null, &device));
                 }
