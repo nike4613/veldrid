@@ -292,7 +292,7 @@ namespace Veldrid.Vulkan2
                     switch (name)
                     {
                         case "VK_EXT_debug_marker":
-                        case "VK_EXT_debug_utils":
+                        //case "VK_EXT_debug_utils":
                             dcs.HasDebugMarkerExt = true;
                             goto EnableExtension;
 

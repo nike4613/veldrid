@@ -918,7 +918,38 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        public unsafe override Pipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
+        private static void SetupSpecializationData(SpecializationConstant[] specDescs,
+            out uint specializationDataSize, out byte[] specializationData,
+            out uint specializationMapCount, out VkSpecializationMapEntry[] specializationMapEntries)
+        {
+            specializationDataSize = 0;
+            foreach (var spec in specDescs)
+            {
+                specializationDataSize += VkFormats.GetSpecializationConstantSize(spec.Type);
+            }
+
+            specializationData = ArrayPool<byte>.Shared.Rent((int)specializationDataSize);
+
+            specializationMapCount = (uint)specDescs.Length;
+            specializationMapEntries = ArrayPool<VkSpecializationMapEntry>.Shared.Rent(specDescs.Length);
+
+            var offset = 0u;
+            for (var i = 0; i < specDescs.Length; i++)
+            {
+                var data = specDescs[i].Data;
+                var size = VkFormats.GetSpecializationConstantSize(specDescs[i].Type);
+                MemoryMarshal.AsBytes(new Span<ulong>(ref data)).CopyTo(specializationData.AsSpan().Slice((int)offset));
+                specializationMapEntries[i] = new()
+                {
+                    constantID = specDescs[i].ID,
+                    offset = offset,
+                    size = size,
+                };
+                offset += size;
+            }
+        }
+
+        public unsafe override VulkanPipeline CreateGraphicsPipeline(in GraphicsPipelineDescription description)
         {
             ValidateGraphicsPipeline(description);
 
@@ -1205,30 +1236,7 @@ namespace Veldrid.Vulkan2
                 VkSpecializationMapEntry[]? specializationMapEntries = null;
                 if (description.ShaderSet.Specializations is { } specDescs)
                 {
-                    foreach (var spec in specDescs)
-                    {
-                        specializationDataSize += VkFormats.GetSpecializationConstantSize(spec.Type);
-                    }
-
-                    specializationData = ArrayPool<byte>.Shared.Rent((int)specializationDataSize);
-
-                    specializationMapCount = (uint)specDescs.Length;
-                    specializationMapEntries = ArrayPool<VkSpecializationMapEntry>.Shared.Rent(specDescs.Length);
-
-                    var offset = 0u;
-                    for (var i = 0; i < specDescs.Length; i++)
-                    {
-                        var data = specDescs[i].Data;
-                        var size = VkFormats.GetSpecializationConstantSize(specDescs[i].Type);
-                        MemoryMarshal.AsBytes(new Span<ulong>(ref data)).CopyTo(specializationData.AsSpan().Slice((int)offset));
-                        specializationMapEntries[i] = new()
-                        {
-                            constantID = specDescs[i].ID,
-                            offset = offset,
-                            size = size,
-                        };
-                        offset += size;
-                    }
+                    SetupSpecializationData(specDescs, out specializationDataSize, out specializationData, out specializationMapCount, out specializationMapEntries);
                 }
 
                 // Allocate shader create info array
@@ -1349,9 +1357,76 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        public override Pipeline CreateComputePipeline(in ComputePipelineDescription description)
+        public unsafe override VulkanPipeline CreateComputePipeline(in ComputePipelineDescription description)
         {
-            throw new NotImplementedException();
+            VkPipeline pipeline = default;
+            VkPipelineLayout pipelineLayout = default;
+
+            try
+            {
+                // Pipeline Layout
+                pipelineLayout = CreatePipelineLayout(description.ResourceLayouts);
+
+                // Set up shader specialization data
+                var specializationDataSize = 0u;
+                byte[]? specializationData = null;
+                var specializationMapCount = 0u;
+                VkSpecializationMapEntry[]? specializationMapEntries = null;
+                if (description.Specializations is { } specDescs)
+                {
+                    SetupSpecializationData(specDescs, out specializationDataSize, out specializationData, out specializationMapCount, out specializationMapEntries);
+                }
+
+                fixed (byte* pSpecializationData = specializationData)
+                fixed (VkSpecializationMapEntry* pSpecializationMapEntries = specializationMapEntries)
+                {
+                    var specInfo = new VkSpecializationInfo()
+                    {
+                        dataSize = specializationDataSize,
+                        pData = pSpecializationData,
+                        mapEntryCount = specializationMapCount,
+                        pMapEntries = pSpecializationMapEntries,
+                    };
+
+                    var shader = Util.AssertSubtype<Shader, VulkanShader>(description.ComputeShader);
+                    var nameHolder = shader.EntryPoint is "main" ? Vulkan.CommonStrings.main : new FixedUtf8String(shader.EntryPoint);
+
+                    var shaderCreateInfo = new VkPipelineShaderStageCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                        module = shader.ShaderModule,
+                        stage = VkFormats.VdToVkShaderStages(shader.Stage),
+                        pSpecializationInfo = &specInfo,
+                        pName = nameHolder
+                    };
+
+                    var pipelineCreateInfo = new VkComputePipelineCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                        stage = shaderCreateInfo,
+                        layout = pipelineLayout,
+                    };
+
+                    VulkanUtil.CheckResult(vkCreateComputePipelines(_gd.Device, default, 1, &pipelineCreateInfo, null, &pipeline));
+
+                    GC.KeepAlive(nameHolder);
+                }
+
+                // we now have the pipeline, create our wrapper
+                return new VulkanPipeline(_gd, description, ref pipeline, ref pipelineLayout);
+            }
+            finally
+            {
+                if (pipeline != VkPipeline.NULL)
+                {
+                    vkDestroyPipeline(_gd.Device, pipeline, null);
+                }
+
+                if (pipelineLayout != VkPipelineLayout.NULL)
+                {
+                    vkDestroyPipelineLayout(_gd.Device, pipelineLayout, null);
+                }
+            }
         }
     }
 }
