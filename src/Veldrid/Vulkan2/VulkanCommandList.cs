@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Buffers;
+using System.Runtime.CompilerServices;
 
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
@@ -45,6 +46,35 @@ namespace Veldrid.Vulkan2
         private bool _bufferBegun;
         private bool _bufferEnded;
 
+        // Dynamic state
+
+        // Graphics State
+        private uint _viewportCount;
+        private VkViewport[] _viewports = [];
+        private VkRect2D[] _scissorRects = [];
+        private bool _viewportsChanged = false;
+        private bool _scissorRectsChanged = false;
+
+        private VkClearValue[] _clearValues = [];
+        private bool[] _validClearValues = [];
+        private VkClearValue? _depthClearValue;
+
+        private VulkanFramebuffer? _currentFramebuffer;
+        private VulkanPipeline? _currentGraphicsPipeline;
+        private BoundResourceSetInfo[] _currentGraphicsResourceSets = [];
+        private bool[] _graphicsResourceSetsChanged = [];
+        private VkBuffer[] _vertexBindings = [];
+        private ulong[] _vertexOffsets = [];
+        private uint _numVertexBindings = 0;
+        private bool _vertexBindingsChanged;
+        private bool _currentFramebufferEverActive;
+        private bool _framebufferRenderPassInstanceActive; // <-- This is true when the framebuffer's rendering context (whether a VkRenderPass or a dynamic context) is active
+
+        // Compute State
+        private VulkanPipeline? _currentComputePipeline;
+        private BoundResourceSetInfo[] _currentComputeResourceSets = [];
+        private bool[] _computeResourceSetsChanged = [];
+
         public VulkanCommandList(VulkanGraphicsDevice device, VkCommandPool pool, in CommandListDescription description)
             : base(description, device.Features, device.UniformBufferMinOffsetAlignment, device.StructuredBufferMinOffsetAlignment)
         {
@@ -75,7 +105,7 @@ namespace Veldrid.Vulkan2
                 RefCounts = new();
             }
 
-            public void AddResource(ISynchronizedResource resource)
+            public void AddResource(IResourceRefCountTarget resource)
             {
                 AddRefCount(resource.RefCount);
             }
@@ -581,7 +611,8 @@ namespace Veldrid.Vulkan2
             return needsBarrier;
         }
 
-        public void SyncResource(ISynchronizedResource resource, in SyncRequest req)
+        // returns true if the sync generated a barrier
+        public bool SyncResource(ISynchronizedResource resource, in SyncRequest req)
         {
             ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, resource, out var exists);
             if (!exists)
@@ -589,9 +620,12 @@ namespace Veldrid.Vulkan2
                 localSyncInfo = new();
             }
 
+            var result = false;
+
             if (SyncResourceToState(ref localSyncInfo.LocalState, resource, req))
             {
                 localSyncInfo.HasBarrier = true;
+                result = true;
             }
 
             // mark the expected state appropriately
@@ -604,6 +638,8 @@ namespace Veldrid.Vulkan2
                     localSyncInfo.Expected.Layout = req.Layout;
                 }
             }
+
+            return result;
         }
 
         private bool SyncResourceToState(ref SyncState state, ISynchronizedResource resource, in SyncRequest req)
@@ -912,7 +948,27 @@ namespace Veldrid.Vulkan2
             }
 
             ClearCachedState();
-            // TODO: clear other cached state
+            _currentFramebuffer = null;
+            _currentGraphicsPipeline = null;
+            _currentComputePipeline = null;
+            ClearSets(_currentGraphicsResourceSets);
+            ClearSets(_currentComputeResourceSets);
+            _numVertexBindings = 0;
+            _viewportCount = 0;
+            _depthClearValue = null;
+            _viewportsChanged = false;
+            _scissorRectsChanged = false;
+            _currentFramebufferEverActive = false;
+            _framebufferRenderPassInstanceActive = false;
+            Util.ClearArray(_graphicsResourceSetsChanged);
+            Util.ClearArray(_computeResourceSetsChanged);
+            Util.ClearArray(_clearValues);
+            Util.ClearArray(_validClearValues);
+            Util.ClearArray(_scissorRects);
+            Util.ClearArray(_vertexBindings);
+            Util.ClearArray(_vertexOffsets);
+            Util.ClearArray(_viewports);
+            Util.ClearArray(_scissorRects);
 
             _currentStagingInfo = GetStagingInfo();
 
@@ -932,12 +988,11 @@ namespace Veldrid.Vulkan2
                 throw new VeldridException("CommandBuffer must have been started before End() may be called.");
             }
 
+            EnsureNoRenderPass();
             EmitQueuedSynchro(); // at the end of the CL, any queued synchronization needs to be emitted so we don't miss any
 
             _bufferBegun = false;
             _bufferEnded = true;
-
-            // TODO: finish render passes
 
             VulkanUtil.CheckResult(vkEndCommandBuffer(_currentCb));
         }
@@ -952,54 +1007,508 @@ namespace Veldrid.Vulkan2
             _currentStagingInfo.TexturesUsed.Add(texture);
         }
 
-        private protected override void SetPipelineCore(Pipeline pipeline)
+        private static void ClearSets(Span<BoundResourceSetInfo> boundSets)
+        {
+            foreach (ref BoundResourceSetInfo boundSetInfo in boundSets)
+            {
+                boundSetInfo.Offsets.Dispose();
+                boundSetInfo = default;
+            }
+        }
+
+        protected override void ResolveTextureCore(Texture source, Texture destination)
+        {
+            var srcTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
+            var dstTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
+            _currentStagingInfo.AddResource(srcTex);
+            _currentStagingInfo.AddResource(dstTex);
+
+            // texture resolve cannot be done in a render pass
+            EnsureNoRenderPass();
+
+            var aspectFlags = ((source.Usage & TextureUsage.DepthStencil) == TextureUsage.DepthStencil)
+                ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT | VkImageAspectFlags.VK_IMAGE_ASPECT_STENCIL_BIT
+                : VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+            var region = new VkImageResolve()
+            {
+                extent = new VkExtent3D() { width = source.Width, height = source.Height, depth = source.Depth },
+                srcSubresource = new VkImageSubresourceLayers() { layerCount = 1, aspectMask = aspectFlags },
+                dstSubresource = new VkImageSubresourceLayers() { layerCount = 1, aspectMask = aspectFlags }
+            };
+
+            // generate synchro for the source and destination
+            SyncResource(srcTex, new()
+            {
+                Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
+                }
+            });
+            SyncResource(srcTex, new()
+            {
+                Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
+                }
+            });
+
+            // make sure that it's actually emitted
+            EmitQueuedSynchro();
+
+            // then emit the actual resolve command
+            vkCmdResolveImage(_currentCb,
+                srcTex.DeviceImage,
+                VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                dstTex.DeviceImage,
+                VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, &region);
+        }
+
+        private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, nint source, uint sizeInBytes)
+        {
+            var stagingBuffer = Device.GetPooledStagingBuffer(sizeInBytes);
+            AddStagingResource(stagingBuffer);
+
+            Device.UpdateBuffer(stagingBuffer, bufferOffsetInBytes, source, sizeInBytes);
+            CopyBuffer(stagingBuffer, 0, buffer, bufferOffsetInBytes, sizeInBytes);
+        }
+
+        protected override void CopyBufferCore(DeviceBuffer source, DeviceBuffer destination, ReadOnlySpan<BufferCopyCommand> commands)
+        {
+            var srcBuf = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(source);
+            var dstBuf = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(destination);
+            _currentStagingInfo.AddResource(srcBuf);
+            _currentStagingInfo.AddResource(dstBuf);
+
+            EnsureNoRenderPass();
+
+            // emit synchro for the 2 buffers
+            SyncResource(srcBuf, new()
+            {
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
+                }
+            });
+            SyncResource(dstBuf, new()
+            {
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
+                }
+            });
+
+            // then actually execute the copy
+            // conveniently, BufferCopyCommand has the same layout as VkBufferCopy! We can issue a bunch of copies at once, as a result.
+            fixed (BufferCopyCommand* commandPtr = commands)
+            {
+                int offset = 0;
+                int prevOffset = 0;
+
+                while (offset < commands.Length)
+                {
+                    if (commands[offset].Length != 0)
+                    {
+                        offset++;
+                        continue;
+                    }
+
+                    int count = offset - prevOffset;
+                    if (count > 0)
+                    {
+                        vkCmdCopyBuffer(
+                            _currentCb,
+                            srcBuf.DeviceBuffer,
+                            dstBuf.DeviceBuffer,
+                            (uint)count,
+                            (VkBufferCopy*)(commandPtr + prevOffset));
+                    }
+
+                    while (offset < commands.Length)
+                    {
+                        if (commands[offset].Length != 0)
+                        {
+                            break;
+                        }
+                        offset++;
+                    }
+                    prevOffset = offset;
+                }
+
+                {
+                    int count = offset - prevOffset;
+                    if (count > 0)
+                    {
+                        vkCmdCopyBuffer(
+                            _currentCb,
+                            srcBuf.DeviceBuffer,
+                            dstBuf.DeviceBuffer,
+                            (uint)count,
+                            (VkBufferCopy*)(commandPtr + prevOffset));
+                    }
+                }
+            }
+        }
+
+        protected override void CopyTextureCore(Texture source, uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer, Texture destination, uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer, uint width, uint height, uint depth, uint layerCount)
         {
             throw new NotImplementedException();
         }
 
-        private protected override void SetVertexBufferCore(uint index, DeviceBuffer buffer, uint offset)
+        private protected override void PushDebugGroupCore(ReadOnlySpan<char> name)
+        {
+            var vkCmdDebugMarkerBeginEXT = Device.vkCmdDebugMarkerBeginEXT;
+            if (vkCmdDebugMarkerBeginEXT is null) return;
+
+            var byteBuffer = (stackalloc byte[256]);
+            Util.GetNullTerminatedUtf8(name, ref byteBuffer);
+            fixed (byte* utf8Ptr = byteBuffer)
+            {
+                VkDebugMarkerMarkerInfoEXT markerInfo = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_DEBUG_MARKER_MARKER_INFO_EXT,
+                    pMarkerName = (sbyte*)utf8Ptr
+                };
+                vkCmdDebugMarkerBeginEXT(_currentCb, &markerInfo);
+            }
+        }
+
+        private protected override void PopDebugGroupCore()
+        {
+            var vkCmdDebugMarkerEndEXT = Device.vkCmdDebugMarkerEndEXT;
+            if (vkCmdDebugMarkerEndEXT is null) return;
+            vkCmdDebugMarkerEndEXT(_currentCb);
+        }
+
+        private protected override void InsertDebugMarkerCore(ReadOnlySpan<char> name)
+        {
+            var vkCmdDebugMarkerInsertEXT = Device.vkCmdDebugMarkerInsertEXT;
+            if (vkCmdDebugMarkerInsertEXT is null) return;
+
+            var byteBuffer = (stackalloc byte[256]);
+            Util.GetNullTerminatedUtf8(name, ref byteBuffer);
+            fixed (byte* utf8Ptr = byteBuffer)
+            {
+                VkDebugMarkerMarkerInfoEXT markerInfo = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_DEBUG_MARKER_MARKER_INFO_EXT,
+                    pMarkerName = (sbyte*)utf8Ptr
+                };
+                vkCmdDebugMarkerInsertEXT(_currentCb, &markerInfo);
+            }
+        }
+
+
+        private void EnsureRenderPass()
         {
             throw new NotImplementedException();
         }
 
-        private protected override void SetIndexBufferCore(DeviceBuffer buffer, IndexFormat format, uint offset)
+        private bool EnsureNoRenderPass()
         {
-            throw new NotImplementedException();
-        }
+            if (!_framebufferRenderPassInstanceActive)
+            {
+                // no render pass is actually active, nothing to do
+                return false;
+            }
 
-        protected override void SetGraphicsResourceSetCore(uint slot, ResourceSet rs, ReadOnlySpan<uint> dynamicOffsets)
-        {
-            throw new NotImplementedException();
-        }
-
-        protected override void SetComputeResourceSetCore(uint slot, ResourceSet set, ReadOnlySpan<uint> dynamicOffsets)
-        {
-            throw new NotImplementedException();
-        }
-
-        protected override void SetFramebufferCore(Framebuffer fb)
-        {
             throw new NotImplementedException();
         }
 
         private protected override void ClearColorTargetCore(uint index, RgbaFloat clearColor)
         {
-            throw new NotImplementedException();
+            var clearValue = new VkClearValue()
+            {
+                color = Unsafe.BitCast<RgbaFloat, VkClearColorValue>(clearColor)
+            };
+
+            if (!_framebufferRenderPassInstanceActive)
+            {
+                // We don't yet have a render pass, queue up the clear for the next render pass.
+                _clearValues[index] = clearValue;
+                _validClearValues[index] = true;
+            }
+            else
+            {
+                // We have a render pass, so we need to emit a vkCmdClearAttachments call.
+                //
+                // The synchronization here is strange though; We normally can't emit synchronization
+                // calls within a render pass, because they're subject to some very strict rules.
+                // For this case specifically, however, because we're targeting a color target of
+                // the current render pass, it *should* be safe to write-sync and immediately enqueue
+                // the resulting buffer.
+
+                var tex = Util.AssertSubtype<Texture, VulkanTexture>(_currentFramebuffer!.ColorTargets[(int)index].Target);
+
+                if (SyncResource(tex, new()
+                    {
+                        BarrierMasks = new()
+                        {
+                            // CmdClearAttachments operats as COLOR_ATTACHMENT_OUTPUT (for color attachments)
+                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            AccessMask = VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        }
+                    }))
+                {
+                    // a barrier was necessary, flush immediately
+                    EmitQueuedSynchro();
+                }
+
+                // now that we've set up the synchro, emit the call
+                var clearAttachment = new VkClearAttachment()
+                {
+                    colorAttachment = index,
+                    aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                    clearValue = clearValue,
+                };
+                var clearRect = new VkClearRect()
+                {
+                    baseArrayLayer = 0,
+                    layerCount = 1,
+                    rect = new()
+                    {
+                        offset = new(),
+                        extent = new VkExtent2D() { width = tex.Width, height = tex.Height },
+                    }
+                };
+                // TODO: maybe we should try to batch these?
+                vkCmdClearAttachments(_currentCb, 1, &clearAttachment, 1, &clearRect);
+            }
         }
 
         private protected override void ClearDepthStencilCore(float depth, byte stencil)
         {
-            throw new NotImplementedException();
+            var clearValue = new VkClearValue()
+            {
+                depthStencil = new VkClearDepthStencilValue()
+                {
+                    depth = depth,
+                    stencil = stencil
+                }
+            };
+
+            if (!_framebufferRenderPassInstanceActive)
+            {
+                // no render pass is active, queue it up for when we start it
+                _depthClearValue = clearValue;
+            }
+            else
+            {
+                // A render pass is currently active. All of the same caveats apply as in ClearColorTargetCore.
+                var renderableExtent = _currentFramebuffer!.RenderableExtent;
+                if (renderableExtent.width > 0 && renderableExtent.height > 0)
+                {
+                    var tex = Util.AssertSubtype<Texture, VulkanTexture>(_currentFramebuffer!.DepthTarget!.Value.Target);
+
+                    if (SyncResource(tex, new()
+                    {
+                        BarrierMasks = new()
+                        {
+                            // CmdClearAttachments operats as EARLY_FRAGMENT_TESTS and LATE_FRAGMENT_TESTS (for depth and stencil attachments)
+                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                                        | VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                            AccessMask = VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        }
+                    }))
+                    {
+                        // a barrier was necessary, flush immediately
+                        EmitQueuedSynchro();
+                    }
+
+                    var aspect = FormatHelpers.IsStencilFormat(tex.Format)
+                        ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT | VkImageAspectFlags.VK_IMAGE_ASPECT_STENCIL_BIT
+                        : VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT;
+
+                    var clearAttachment = new VkClearAttachment()
+                    {
+                        aspectMask = aspect,
+                        clearValue = clearValue
+                    };
+                    var clearRect = new VkClearRect()
+                    {
+                        baseArrayLayer = 0,
+                        layerCount = 1,
+                        rect = new()
+                        {
+                            offset = new(),
+                            extent = renderableExtent,
+                        }
+                    };
+                    vkCmdClearAttachments(_currentCb, 1, &clearAttachment, 1, &clearRect);
+                }
+            }
+        }
+
+
+        protected override void SetFramebufferCore(Framebuffer fb)
+        {
+            var vkFbb = Util.AssertSubtype<Framebuffer, VulkanFramebufferBase>(fb);
+            _currentStagingInfo.AddRefCount(vkFbb.RefCount);
+
+            // the framebuffer we actually want to bind to is the real "current framebuffer"
+            // For user-created framebufferws, it will be exactly the one passed in.
+            // For swapchain framebuffers, it will be the active buffer from the swapchain.
+            var vkFb = vkFbb.CurrentFramebuffer;
+            _currentStagingInfo.AddRefCount(vkFb.RefCount);
+
+            // finish any active render pass
+            EnsureNoRenderPass();
+
+            // then set up the new target framebuffer
+            _currentFramebuffer = vkFb;
+            _currentFramebufferEverActive = false;
+
+            _viewportCount = uint.Max(1, (uint)vkFb.ColorTargets.Length);
+            Util.EnsureArrayMinimumSize(ref _viewports, _viewportCount);
+            Util.EnsureArrayMinimumSize(ref _scissorRects, _viewportCount);
+            Util.ClearArray(_viewports);
+            Util.ClearArray(_scissorRects);
+            _viewportsChanged = false;
+            _scissorRectsChanged = false;
+
+            var clearValueCount = (uint)vkFb.ColorTargets.Length;
+            Util.EnsureArrayMinimumSize(ref _clearValues, clearValueCount);
+            Util.EnsureArrayMinimumSize(ref _validClearValues, clearValueCount);
+            Util.ClearArray(_clearValues);
+            Util.ClearArray(_validClearValues);
+            _depthClearValue = null;
         }
 
         public override void SetViewport(uint index, in Viewport viewport)
         {
-            throw new NotImplementedException();
+            var yInverted = Device.IsClipSpaceYInverted;
+            var vpY = yInverted
+                ? viewport.Y
+                : viewport.Height + viewport.Y;
+            var vpHeight = yInverted
+                ? viewport.Height
+                : -viewport.Height;
+
+            _viewportsChanged = true;
+            _viewports[index] = new VkViewport()
+            {
+                x = viewport.X,
+                y = vpY,
+                width = viewport.Width,
+                height = vpHeight,
+                minDepth = viewport.MinDepth,
+                maxDepth = viewport.MaxDepth
+            };
         }
 
         public override void SetScissorRect(uint index, uint x, uint y, uint width, uint height)
         {
-            throw new NotImplementedException();
+            var  scissor = new VkRect2D()
+            {
+                offset = new VkOffset2D() { x = (int)x, y = (int)y },
+                extent = new VkExtent2D() { width = width, height = height }
+            };
+
+            var scissorRects = _scissorRects;
+            if (scissorRects[index].offset.x != scissor.offset.x ||
+                scissorRects[index].offset.y != scissor.offset.y ||
+                scissorRects[index].extent.width != scissor.extent.width ||
+                scissorRects[index].extent.height != scissor.extent.height)
+            {
+                _scissorRectsChanged = true;
+                scissorRects[index] = scissor;
+            }
+        }
+
+        private protected override void SetPipelineCore(Pipeline pipeline)
+        {
+            var vkPipeline = Util.AssertSubtype<Pipeline, VulkanPipeline>(pipeline);
+            _currentStagingInfo.AddResource(vkPipeline);
+
+            if (!vkPipeline.IsComputePipeline)
+            {
+                // this is a graphics pipeline
+                if (_currentGraphicsPipeline == vkPipeline) return; // no work to do
+
+                // the graphics pipeline changed, resize everything and bind the pipeline
+                var resourceCount = vkPipeline.ResourceSetCount;
+                Util.EnsureArrayMinimumSize(ref _currentGraphicsResourceSets, resourceCount);
+                Util.EnsureArrayMinimumSize(ref _graphicsResourceSetsChanged, resourceCount);
+                ClearSets(_currentGraphicsResourceSets);
+
+                var vertexBufferCount = vkPipeline.VertexLayoutCount;
+                Util.EnsureArrayMinimumSize(ref _vertexBindings, vertexBufferCount);
+                Util.EnsureArrayMinimumSize(ref _vertexOffsets, vertexBufferCount);
+
+                vkCmdBindPipeline(_currentCb, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, vkPipeline.DevicePipeline);
+                _currentGraphicsPipeline = vkPipeline;
+            }
+            else
+            {
+                // this is a compute pipeline
+                if (_currentComputePipeline == vkPipeline) return; // no work to do
+
+                // the compute pipeline changed, resize everything and bind it
+                var resourceCount = vkPipeline.ResourceSetCount;
+                Util.EnsureArrayMinimumSize(ref _currentComputeResourceSets, resourceCount);
+                Util.EnsureArrayMinimumSize(ref _computeResourceSetsChanged, resourceCount);
+                ClearSets(_currentComputeResourceSets);
+
+                vkCmdBindPipeline(_currentCb, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE, vkPipeline.DevicePipeline);
+                _currentComputePipeline = vkPipeline;
+            }
+        }
+
+        private protected override void SetVertexBufferCore(uint index, DeviceBuffer buffer, uint offset)
+        {
+            var vkBuffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(buffer);
+
+            var bufferChanged = _vertexBindings[index] != vkBuffer.DeviceBuffer;
+            if (bufferChanged || _vertexOffsets[index] != offset)
+            {
+                _vertexBindingsChanged = true;
+                if (bufferChanged)
+                {
+                    _currentStagingInfo.AddResource(vkBuffer);
+                    _vertexBindings[index] = vkBuffer.DeviceBuffer;
+                }
+
+                _vertexOffsets[index] = offset;
+                _numVertexBindings = uint.Max(index + 1, _numVertexBindings);
+            }
+        }
+
+        private protected override void SetIndexBufferCore(DeviceBuffer buffer, IndexFormat format, uint offset)
+        {
+            var vkBuffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(buffer);
+            _currentStagingInfo.AddResource(vkBuffer);
+
+            vkCmdBindIndexBuffer(_currentCb, vkBuffer.DeviceBuffer, offset, Vulkan.VkFormats.VdToVkIndexFormat(format));
+        }
+
+        protected override void SetGraphicsResourceSetCore(uint slot, ResourceSet rs, ReadOnlySpan<uint> dynamicOffsets)
+        {
+            ref BoundResourceSetInfo set = ref _currentGraphicsResourceSets[slot];
+            if (!set.Equals(rs, dynamicOffsets))
+            {
+                set.Offsets.Dispose();
+                set = new BoundResourceSetInfo(rs, dynamicOffsets);
+                _graphicsResourceSetsChanged[slot] = true;
+                Util.AssertSubtype<ResourceSet, VulkanResourceSet>(rs);
+            }
+        }
+
+        protected override void SetComputeResourceSetCore(uint slot, ResourceSet rs, ReadOnlySpan<uint> dynamicOffsets)
+        {
+            ref BoundResourceSetInfo set = ref _currentComputeResourceSets[slot];
+            if (!set.Equals(rs, dynamicOffsets))
+            {
+                set.Offsets.Dispose();
+                set = new BoundResourceSetInfo(rs, dynamicOffsets);
+                _computeResourceSetsChanged[slot] = true;
+                Util.AssertSubtype<ResourceSet, VulkanResourceSet>(rs);
+            }
         }
 
         private protected override void DrawCore(uint vertexCount, uint instanceCount, uint vertexStart, uint instanceStart)
@@ -1032,42 +1541,7 @@ namespace Veldrid.Vulkan2
             throw new NotImplementedException();
         }
 
-        protected override void ResolveTextureCore(Texture source, Texture destination)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, nint source, uint sizeInBytes)
-        {
-            throw new NotImplementedException();
-        }
-
-        protected override void CopyBufferCore(DeviceBuffer source, DeviceBuffer destination, ReadOnlySpan<BufferCopyCommand> commands)
-        {
-            throw new NotImplementedException();
-        }
-
-        protected override void CopyTextureCore(Texture source, uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer, Texture destination, uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer, uint width, uint height, uint depth, uint layerCount)
-        {
-            throw new NotImplementedException();
-        }
-
         private protected override void GenerateMipmapsCore(Texture texture)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void PushDebugGroupCore(ReadOnlySpan<char> name)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void PopDebugGroupCore()
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void InsertDebugMarkerCore(ReadOnlySpan<char> name)
         {
             throw new NotImplementedException();
         }
