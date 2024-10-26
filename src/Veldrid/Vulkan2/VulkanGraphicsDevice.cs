@@ -538,7 +538,7 @@ namespace Veldrid.Vulkan2
             }
         };
 
-        internal VkSemaphore EndAndSubmitCommands(VulkanCommandList cl, VkPipelineStageFlags2 semaphoreStages = 0)
+        internal (VkSemaphore Sem, VkFence Fence) EndAndSubmitCommands(VulkanCommandList cl, VkPipelineStageFlags2 semaphoreStages = 0)
         {
             cl.End();
 
@@ -968,7 +968,21 @@ namespace Veldrid.Vulkan2
 
                 if ((mode & MapMode.Read) != 0)
                 {
-                    // TODO: we need to sync-to-host here, and wait for that
+                    // a read mode was requested, we need to sync-to-host to make sure the memory is visible
+                    var cl = GetAndBeginCommandList();
+                    cl.SyncResource(syncResource, new()
+                    {
+                        BarrierMasks = new()
+                        {
+                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                            AccessMask = VkAccessFlags.VK_ACCESS_HOST_READ_BIT,
+                        }
+                    });
+                    var (_, fence) = EndAndSubmitCommands(cl);
+                    // now we need to wait for our fence so we know that the sync has gone through
+                    VulkanUtil.CheckResult(vkWaitForFences(_deviceCreateState.Device, 1, &fence, 1, ulong.MaxValue));
+                    // since we just waited on a fence, lets process pending fences and return stuff to pools
+                    CheckFencesForCompletion();
                 }
 
                 var mappedRange = new VkMappedMemoryRange()
@@ -1103,7 +1117,7 @@ namespace Veldrid.Vulkan2
                     }
                 });
             }
-            var semaphore = EndAndSubmitCommands(cl, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+            var (semaphore, _) = EndAndSubmitCommands(cl, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
 
             var presentInfo = new VkPresentInfoKHR()
             {

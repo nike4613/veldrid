@@ -239,7 +239,7 @@ namespace Veldrid.Vulkan2
             bool FenceWasRented
             );
 
-        public VkSemaphore SubmitToQueue(VkQueue queue, VulkanFence? submitFence, Action<VulkanCommandList>? onSubmitCompleted, VkPipelineStageFlags2 completionSemaphoreStages)
+        public (VkSemaphore SubmitSem, VkFence SubmitFence) SubmitToQueue(VkQueue queue, VulkanFence? submitFence, Action<VulkanCommandList>? onSubmitCompleted, VkPipelineStageFlags2 completionSemaphoreStages)
         {
             if (!_bufferEnded)
             {
@@ -343,7 +343,7 @@ namespace Veldrid.Vulkan2
             RefCount.Increment();
             Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, mainCompleteSem, resourceInfo, onSubmitCompleted, fenceWasRented));
 
-            return mainCompleteSem;
+            return (mainCompleteSem, fence);
         }
 
         internal void OnSubmissionFenceCompleted(VkFence fence, in FenceCompletionCallbackInfo callbackInfo, bool errored)
@@ -1144,7 +1144,11 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        protected override void CopyTextureCore(Texture source, uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer, Texture destination, uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer, uint width, uint height, uint depth, uint layerCount)
+        protected override void CopyTextureCore(Texture source,
+            uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer,
+            Texture destination,
+            uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer,
+            uint width, uint height, uint depth, uint layerCount)
         {
             throw new NotImplementedException();
         }
