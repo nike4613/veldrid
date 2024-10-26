@@ -93,7 +93,7 @@ namespace Veldrid.Vulkan
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void DecrementCore(bool disposeOrFinalizeOperation)
+        private void DecrementCore(bool disposeOrFinalizeOperation, bool throwOnDisposeFailure = true)
         {
             // See Increment above for the design of the synchronization here. Basically we
             // will try to decrement the current ref count and, if that would take us to
@@ -126,7 +126,14 @@ namespace Veldrid.Vulkan
                 // used).
                 if ((oldState & StateBits.RefCount) == 0)
                 {
-                    ThrowObjectDisposed();
+                    if (throwOnDisposeFailure)
+                    {
+                        ThrowObjectDisposed();
+                    }
+                    else
+                    {
+                        return;
+                    }
                 }
 
                 // If we're proposing a decrement to zero and the handle is not closed
@@ -188,7 +195,7 @@ namespace Veldrid.Vulkan
 
         ~ResourceRefCount()
         {
-            DecrementDispose();
+            DecrementCore(disposeOrFinalizeOperation: true, throwOnDisposeFailure: false);
         }
 
         /// <summary>Bitmasks for the <see cref="_state"/> field.</summary>

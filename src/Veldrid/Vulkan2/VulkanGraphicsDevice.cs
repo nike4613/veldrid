@@ -247,8 +247,10 @@ namespace Veldrid.Vulkan2
             {
                 foreach (var (resource, mapInfo) in _mappedResources)
                 {
-                    // force-deallocate the mapping by directly calling RefZeroed
-                    mapInfo.RefZeroed();
+                    mapInfo.RefCount.DecrementDispose();
+                    // force-deallocate
+                    while (!mapInfo.RefCount.IsClosed)
+                        mapInfo.RefCount.Decrement();
                 }
             }
 
