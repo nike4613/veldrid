@@ -103,11 +103,11 @@ namespace Veldrid.Vulkan2
                     BarrierMasks = new()
                     {
                         AccessMask = (loadOp == VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD
-                            ? VkAccessFlags2.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                            : 0) | VkAccessFlags2.VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                        | VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
-                        | VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, // TODO: what stage mask should this be?
+                            ? VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                            : 0) | VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                        | VkPipelineStageFlags.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                        | VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, // TODO: what stage mask should this be?
                     }
                 });
 
@@ -157,9 +157,9 @@ namespace Veldrid.Vulkan2
                     BarrierMasks = new()
                     {
                         AccessMask = (loadOp == VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD
-                            ? VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT
-                            : 0) | VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, // TODO: what stage mask should this be?
+                            ? VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+                            : 0) | VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, // TODO: what stage mask should this be?
                     }
                 });
 

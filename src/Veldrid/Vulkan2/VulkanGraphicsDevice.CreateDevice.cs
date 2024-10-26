@@ -56,6 +56,7 @@ namespace Veldrid.Vulkan2
             public bool HasDedicatedAllocationExt;
             public bool HasDriverPropertiesExt;
             public bool HasDynamicRendering;
+            public bool HasSync2Ext;
         }
 
         public static VulkanGraphicsDevice CreateDevice(GraphicsDeviceOptions gdOpts, VulkanDeviceOptions vkOpts, SwapchainDescription? swapchainDesc)
@@ -285,6 +286,7 @@ namespace Veldrid.Vulkan2
                 dcs.HasDriverPropertiesExt = dcs.ApiVersion >= new VkVersion(1, 2, 0);
                 dcs.HasDebugMarkerExt = false;
                 dcs.HasDynamicRendering = dcs.ApiVersion >= new VkVersion(1, 3, 0);
+                dcs.HasSync2Ext = dcs.ApiVersion >= new VkVersion(1, 3, 0);
 
                 for (var i = 0; i < numDeviceExtensions; i++)
                 {
@@ -315,6 +317,9 @@ namespace Veldrid.Vulkan2
 
                         case "VK_KHR_dynamic_rendering":
                             dcs.HasDynamicRendering = true;
+                            goto EnableExtension;
+                        case "VK_KHR_synchronization2":
+                            dcs.HasSync2Ext = true;
                             goto EnableExtension;
 
                         default:

@@ -9,8 +9,8 @@ namespace Veldrid.Vulkan2
 {
     internal struct SyncBarrierMasks
     {
-        public VkAccessFlags2 AccessMask;
-        public VkPipelineStageFlags2 StageMask;
+        public VkAccessFlags AccessMask;
+        public VkPipelineStageFlags StageMask;
     }
 
     internal struct SyncRequest
@@ -23,14 +23,26 @@ namespace Veldrid.Vulkan2
     internal struct SyncState
     {
         public SyncBarrierMasks LastWriter;
+        public SyncBarrierMasks OngoingReaders;
         // Bitfield marking which accesses in which shader stages stages have seen the last write
         public uint PerStageReaders; // TODO: turn this into a concrete layout
         public VkImageLayout CurrentImageLayout;
     }
 
-    internal struct ResourceSyncInfo
+    internal struct ResourceSyncInfo()
     {
         public SyncRequest Expected;
         public SyncState LocalState;
+        public bool HasBarrier;
+    }
+
+    internal struct ResourceBarrierInfo
+    {
+        public VkAccessFlags SrcAccess;
+        public VkAccessFlags DstAccess;
+        public VkPipelineStageFlags SrcStageMask;
+        public VkPipelineStageFlags DstStageMask;
+        public VkImageLayout SrcLayout;
+        public VkImageLayout DstLayout;
     }
 }

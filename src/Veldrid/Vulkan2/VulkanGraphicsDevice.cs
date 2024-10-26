@@ -167,13 +167,15 @@ namespace Veldrid.Vulkan2
                         GetDeviceProcAddr("vkCmdEndRendering"u8, "vkCmdEndRenderingKHR"u8);
                 }
 
-                // for sanity, right now we hard-require sync2
-                vkQueueSubmit2 =
-                    (delegate* unmanaged<VkQueue, uint, VkSubmitInfo2*, VkFence, VkResult>)
-                    GetDeviceProcAddr("vkQueueSubmit2"u8, "vkQueueSubmit2KHR"u8);
-                vkCmdPipelineBarrier2 =
-                    (delegate* unmanaged<VkCommandBuffer, VkDependencyInfo*, void>)
-                    GetDeviceProcAddr("vkCmdPipelineBarrier2"u8, "vkCmdPipelineBarrier2KHR"u8);
+                if (_deviceCreateState.HasSync2Ext)
+                {
+                    vkQueueSubmit2 =
+                        (delegate* unmanaged<VkQueue, uint, VkSubmitInfo2*, VkFence, VkResult>)
+                        GetDeviceProcAddr("vkQueueSubmit2"u8, "vkQueueSubmit2KHR"u8);
+                    vkCmdPipelineBarrier2 =
+                        (delegate* unmanaged<VkCommandBuffer, VkDependencyInfo*, void>)
+                        GetDeviceProcAddr("vkCmdPipelineBarrier2"u8, "vkCmdPipelineBarrier2KHR"u8);
+                }
 
                 // Create other bits and pieces
                 _memoryManager = new(
@@ -779,8 +781,8 @@ namespace Veldrid.Vulkan2
                 {
                     LastWriter = new()
                     {
-                        AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                     },
                     PerStageReaders = 0,
                 };
@@ -808,8 +810,8 @@ namespace Veldrid.Vulkan2
                 {
                     LastWriter = new()
                     {
-                        AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                     },
                     PerStageReaders = 0,
                 };
@@ -871,8 +873,8 @@ namespace Veldrid.Vulkan2
             {
                 LastWriter = new()
                 {
-                    AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
-                    StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                 },
                 PerStageReaders = 0,
             };
@@ -913,7 +915,7 @@ namespace Veldrid.Vulkan2
                 ResourceMapping? mapping;
                 lock (_mappedResourcesLock)
                 {
-                    if (_mappedResources.TryGetValue(resource, out mapping))
+                    if (_mappedResources.TryGetValue(resource, out mapping) && !mapping.RefCount.IsClosed)
                     {
                         // mapping already exists, update the mode and increment
                         mapping.RefCount.Increment();
@@ -948,7 +950,7 @@ namespace Veldrid.Vulkan2
                         // and an associated resource
                         mapping = new(this, syncResource, memoryBlock);
                         mapping.UpdateMode(mode);
-                        _mappedResources.Add(resource, mapping);
+                        _mappedResources[resource] = mapping;
                     }
                 }
 
@@ -1031,7 +1033,7 @@ namespace Veldrid.Vulkan2
 
             lock (_mappedResourcesLock)
             {
-                if (_mappedResources.TryGetValue(resource, out var mapping))
+                if (_mappedResources.TryGetValue(resource, out var mapping) && !mapping.RefCount.IsClosed)
                 {
                     if ((mapping.Mode & MapMode.Write) != 0)
                     {
@@ -1051,14 +1053,19 @@ namespace Veldrid.Vulkan2
                             PerStageReaders = 0,
                             LastWriter = new()
                             {
-                                AccessMask = VkAccessFlags2.VK_ACCESS_2_HOST_WRITE_BIT,
-                                StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_HOST_BIT,
+                                AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                                StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                             }
                         };
                     }
 
                     // AFTER syncing, decrement to (possibly) unmap
                     mapping.RefCount.Decrement();
+                    if (mapping.RefCount.IsClosed)
+                    {
+                        // if was the last ourstanding reference, remove the resource from this dict
+                        _mappedResources.Remove(resource);
+                    }
                 }
             }
         }
@@ -1079,8 +1086,8 @@ namespace Veldrid.Vulkan2
                     Layout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                     BarrierMasks = new()
                     {
-                        StageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                        AccessMask = VkAccessFlags2.VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                        StageMask = (VkPipelineStageFlags)uint.MaxValue,
+                        AccessMask = VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                     }
                 });
             }

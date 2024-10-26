@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Buffers;
 
 using TerraFX.Interop.Vulkan;
 using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
@@ -30,6 +31,9 @@ namespace Veldrid.Vulkan2
         private readonly Stack<StagingResourceInfo> _availableStagingInfo = new();
         private readonly Dictionary<VkCommandBuffer, StagingResourceInfo> _submittedStagingInfos = new();
         private readonly Dictionary<ISynchronizedResource, ResourceSyncInfo> _resourceSyncInfo = new();
+        private readonly List<(ISynchronizedResource Resource, ResourceBarrierInfo Barrier)> _pendingBarriers = new();
+        private int _pendingImageBarriers;
+        private int _pendingBufferBarriers;
 
         // Transient per-use fields
         private StagingResourceInfo _currentStagingInfo;
@@ -244,6 +248,12 @@ namespace Veldrid.Vulkan2
                 EmitInitialResourceSync(syncCb);
                 VulkanUtil.CheckResult(vkEndCommandBuffer(syncCb));
 
+                // now that we've finished everything we need to do with synchro, clear our dict
+                _resourceSyncInfo.Clear();
+                _pendingBarriers.Clear();
+                _pendingImageBarriers = 0;
+                _pendingBufferBarriers = 0;
+
                 // then submit everything with just one submission
                 var syncSemaphoreInfo = new VkSemaphoreSubmitInfo()
                 {
@@ -364,19 +374,494 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private void EmitInitialResourceSync(VkCommandBuffer cb)
+        private static int ReadersStageIndex(VkPipelineStageFlags bit)
+            => bit switch
+            {
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT => 0,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT => 1,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT => 2,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT => 3,
+
+                // tesselation and geometry shaders are assigned the same pipeline stage. We make sure when building needed barriers that we over-allocate barriers for this.
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT => 4,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT => 4,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT => 4,
+
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT => 5,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT => 6,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT => 7,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT => 8,
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT => 9,
+
+                _ => Illegal.Value<VkPipelineStageFlags, int>()
+            };
+
+        private static int ReadersAccessIndex(VkAccessFlags bit)
+            => bit switch
+            {
+                // All Shaders
+                VkAccessFlags.VK_ACCESS_SHADER_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_SHADER_WRITE_BIT => 1,
+                VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT => 2,
+
+                // Vertex Input
+                VkAccessFlags.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_INDEX_READ_BIT => 1,
+
+                // Color Attachments
+                VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT => 1,
+
+                // Depth Stencil
+                VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT => 1,
+
+                // Transfer
+                VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT => 1,
+
+                // Host
+                VkAccessFlags.VK_ACCESS_HOST_READ_BIT => 0,
+                VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT => 1,
+
+                _ => Illegal.Value<VkAccessFlags, int>()
+            };
+
+        private static ReadOnlySpan<VkAccessFlags> ValidAccessFlags => [
+            // VERTEX_INPUT
+            VkAccessFlags.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VkAccessFlags.VK_ACCESS_INDEX_READ_BIT,
+            // VERTEX_SHADER
+            VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT,
+            // FRAGMENT_SHADER
+            VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT,
+            // COMPUTE_SHADER
+            VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT | VkAccessFlags.VK_ACCESS_SHADER_WRITE_BIT,
+            // TESS_CONTROL, TESS_EVAL, GEOMETRY
+            VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT,
+            // EARLY_FRAGMENT_TESTS
+            VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            // LATE_FRAGMENT_TESTS
+            VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            // COLOR_ATTACHMENT_OUTPUT,
+            VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            // TRANSFER
+            VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT | VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
+            // HOST
+            VkAccessFlags.VK_ACCESS_HOST_READ_BIT | VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+        ];
+
+        private static uint PerStageAccessMask(SyncBarrierMasks masks)
         {
-            // TODO:
+            const int BitsPerStage = 3;
+
+            var result = 0u;
+
+            for (var stageMask = (uint)masks.StageMask; stageMask != 0; )
+            {
+                var stageBit = stageMask & ~(stageMask - 1);
+                stageMask &= ~stageBit;
+
+                var stageIndex = ReadersStageIndex((VkPipelineStageFlags)stageBit);
+                for (var accessMask = (uint)masks.AccessMask; accessMask != 0; )
+                {
+                    var accessBit = accessMask & ~(accessMask - 1);
+                    accessMask &= ~accessBit;
+
+                    if ((ValidAccessFlags[stageIndex] & (VkAccessFlags)accessBit) != 0)
+                    {
+                        // this is an access we declare to be valid
+                        var accessIndex = ReadersAccessIndex((VkAccessFlags)accessBit);
+                        result |= 1u << (BitsPerStage * stageIndex + accessIndex);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, out ResourceBarrierInfo barrier)
+        {
+            const VkAccessFlags AllWriteAccesses =
+                VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                | VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                | VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT
+                //| VkAccessFlags.VK_ACCESS_MEMORY_WRITE_BIT
+                | VkAccessFlags.VK_ACCESS_SHADER_WRITE_BIT
+                | VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            const VkPipelineStageFlags TesselationStages =
+                VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT
+                | VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT
+                | VkPipelineStageFlags.VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+
+            var requestAccess = req.BarrierMasks.AccessMask;
+            var requestStages = req.BarrierMasks.StageMask;
+            if ((requestStages & TesselationStages) != 0)
+            {
+                // if any of the tesselation stages are set, set all of them
+                requestStages |= TesselationStages;
+            }
+
+            var needsLayoutTransition = req.Layout != state.CurrentImageLayout;
+            var writeAccesses = requestAccess & AllWriteAccesses;
+            var needsWrite = writeAccesses != 0 || needsLayoutTransition;
+
+            barrier = new();
+            if (!needsWrite)
+            {
+                // read-only operation.
+                // These can run concurrently with other reads, but need to wait for outstanding writes.
+
+                var perStageAccessMask = PerStageAccessMask(new() { StageMask = requestStages, AccessMask = requestAccess });
+                var allAccessesHaveSeenWrite = (state.PerStageReaders & perStageAccessMask) == perStageAccessMask;
+
+                if (state.LastWriter.StageMask != 0 && !allAccessesHaveSeenWrite)
+                {
+                    // If there was a preceding write and the request stage hasn't consumed that write, we need a barrier.
+                    barrier.SrcStageMask |= state.LastWriter.StageMask;
+                    barrier.SrcAccess |= state.LastWriter.AccessMask & AllWriteAccesses;
+                }
+
+                // In either case, we need to add the op to the ongoing reads
+                state.OngoingReaders.StageMask |= requestStages;
+                state.OngoingReaders.AccessMask |= requestAccess;
+                // And always mark the per-stage readers
+                state.PerStageReaders |= perStageAccessMask;
+            }
+            else
+            {
+                // This operation is a write. Only one is permitteed simulatneously, and we must wait for outstanding reads.
+                barrier.SrcStageMask |= state.OngoingReaders.StageMask;
+                barrier.SrcAccess |= state.OngoingReaders.AccessMask;
+
+                // after the write, there are no more up-to-date readers
+                state.OngoingReaders = default;
+                state.PerStageReaders = 0;
+
+                // If there's already a pending write, wait for it as well.
+                // If we already are waiting for reads, they're implicitly waiting for the previous write, so we don't need to add that dependency.
+                if (barrier.SrcStageMask == 0 && state.LastWriter.StageMask != 0)
+                {
+                    barrier.SrcStageMask |= state.LastWriter.StageMask;
+                    barrier.SrcAccess |= state.LastWriter.AccessMask;
+                }
+
+                // Mark our writer
+                state.LastWriter = new() { StageMask = requestStages, AccessMask = requestAccess };
+
+                // If the actual requested access was read-only, this is a pure layout transition.
+                // This meeans it is also a read, and should be updated appropriately.
+                if ((requestAccess & AllWriteAccesses) == 0)
+                {
+                    state.OngoingReaders.StageMask |= requestStages;
+                    state.OngoingReaders.AccessMask |= requestAccess;
+                    state.PerStageReaders |= PerStageAccessMask(new() { StageMask = requestStages, AccessMask = requestAccess });
+                }
+            }
+
+            // A barrier is needed if we have any stages to wait on, or if we need a layout transition.
+            var needsBarrier = barrier.SrcStageMask != 0 || needsLayoutTransition;
+
+            if (needsBarrier)
+            {
+                // if we need a barrier, populate the remaining fields for the barrier
+                barrier.DstAccess = requestAccess;
+                barrier.DstStageMask = requestStages;
+                if (barrier.SrcStageMask == 0)
+                {
+                    barrier.SrcStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+                }
+                barrier.SrcLayout = state.CurrentImageLayout;
+                barrier.DstLayout = req.Layout;
+            }
+
+            // Finally, update the resource's image layout
+            state.CurrentImageLayout = req.Layout;
+
+            return needsBarrier;
         }
 
         public void SyncResource(ISynchronizedResource resource, in SyncRequest req)
         {
-            // TODO:
+            ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, resource, out var exists);
+            if (!exists)
+            {
+                localSyncInfo = new();
+            }
+
+            if (SyncResourceToState(ref localSyncInfo.LocalState, resource, req))
+            {
+                localSyncInfo.HasBarrier = true;
+            }
+
+            // mark the expected state appropriately
+            if (!localSyncInfo.HasBarrier)
+            {
+                localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
+                localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
+                if (localSyncInfo.Expected.Layout == 0)
+                {
+                    localSyncInfo.Expected.Layout = req.Layout;
+                }
+            }
+        }
+
+        private bool SyncResourceToState(ref SyncState state, ISynchronizedResource resource, in SyncRequest req)
+        {
+            if (TryBuildSyncBarrier(ref state, in req, out var barrier))
+            {
+                // a barrier is needed, mark appropriately
+                _pendingBarriers.Add((resource, barrier));
+
+                if (resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL)
+                {
+                    _pendingImageBarriers++;
+                }
+                else
+                {
+                    _pendingBufferBarriers++;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private void EmitInitialResourceSync(VkCommandBuffer cb)
+        {
+            Debug.Assert(_pendingBarriers.Count == 0);
+            Debug.Assert(_pendingImageBarriers == 0);
+            Debug.Assert(_pendingBufferBarriers == 0);
+
+            // we're just going to reuse the existing buffers we have, because it's all we actually need
+            // note: we're also under a global lock here, so it's safe to mutate the global information
+            foreach (var (res, info) in _resourceSyncInfo)
+            {
+                _ = SyncResourceToState(ref res.SyncState, res, info.Expected);
+            }
+
+            // then emit the synchronization to the target command buffer
+            EmitQueuedSynchro(cb, _pendingBarriers, ref _pendingImageBarriers, ref _pendingBufferBarriers);
         }
 
         public void EmitQueuedSynchro()
         {
-            // TODO:
+            EmitQueuedSynchro(_currentCb, _pendingBarriers, ref _pendingImageBarriers, ref _pendingBufferBarriers);
+        }
+
+        private void EmitQueuedSynchro(VkCommandBuffer cb,
+            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            ref int pendingImageBarriers, ref int pendingBufferBarriers)
+        {
+            if (Device._deviceCreateState.HasSync2Ext)
+            {
+                EmitQueuedSynchroSync2(Device, cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
+            }
+            else
+            {
+                EmitQueuedSynchroVk11(cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
+            }
+        }
+
+        private static VkImageAspectFlags GetAspectForTexture(VulkanTexture tex)
+        {
+            if ((tex.Usage & TextureUsage.DepthStencil) != 0)
+            {
+                return FormatHelpers.IsStencilFormat(tex.Format)
+                    ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT | VkImageAspectFlags.VK_IMAGE_ASPECT_STENCIL_BIT
+                    : VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT;
+            }
+            else
+            {
+                return VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+            }
+        }
+
+        private static void EmitQueuedSynchroSync2(VulkanGraphicsDevice device, VkCommandBuffer cb,
+            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            ref int pendingImageBarriers, ref int pendingBufferBarriers)
+        {
+            var imgBarriers = ArrayPool<VkImageMemoryBarrier2>.Shared.Rent(pendingImageBarriers);
+            var bufBarriers = ArrayPool<VkBufferMemoryBarrier2>.Shared.Rent(pendingBufferBarriers);
+            var imgIdx = 0;
+            var bufIdx = 0;
+            foreach (var (resource, barrier) in pendingBarriers)
+            {
+                switch (resource)
+                {
+                    case VulkanTexture vkTex when vkTex.DeviceImage != VkImage.NULL:
+                    {
+                        ref var vkBarrier = ref imgBarriers[imgIdx++];
+                        vkBarrier = new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            srcStageMask = (VkPipelineStageFlags2)(uint)barrier.SrcStageMask,
+                            dstStageMask = (VkPipelineStageFlags2)(uint)barrier.DstStageMask,
+                            srcAccessMask = (VkAccessFlags2)(uint)barrier.SrcAccess,
+                            dstAccessMask = (VkAccessFlags2)(uint)barrier.DstAccess,
+                            oldLayout = barrier.SrcLayout,
+                            newLayout = barrier.DstLayout,
+                            image = vkTex.DeviceImage,
+                            subresourceRange = new()
+                            {
+                                baseArrayLayer = 0,
+                                baseMipLevel = 0,
+                                layerCount = vkTex.ArrayLayers,
+                                levelCount = vkTex.MipLevels,
+                                aspectMask = GetAspectForTexture(vkTex)
+                            }
+                        };
+                    }
+                    break;
+
+                    case VulkanBuffer vkBuf:
+                        var deviceBuf = vkBuf.DeviceBuffer;
+                        goto AnyBuffer;
+                    case VulkanTexture vkTex when vkTex.StagingBuffer != VkBuffer.NULL:
+                        deviceBuf = vkTex.StagingBuffer;
+                        goto AnyBuffer;
+
+                    AnyBuffer:
+                        {
+                            ref var vkBarrier = ref bufBarriers[bufIdx++];
+                            vkBarrier = new()
+                            {
+                                sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                srcStageMask = (VkPipelineStageFlags2)(uint)barrier.SrcStageMask,
+                                dstStageMask = (VkPipelineStageFlags2)(uint)barrier.DstStageMask,
+                                srcAccessMask = (VkAccessFlags2)(uint)barrier.SrcAccess,
+                                dstAccessMask = (VkAccessFlags2)(uint)barrier.DstAccess,
+                                offset = 0,
+                                size = VK_WHOLE_SIZE,
+                                buffer  = deviceBuf,
+                            };
+                        }
+                        break;
+                }
+            }
+
+            pendingBarriers.Clear();
+            pendingImageBarriers = 0;
+            pendingBufferBarriers = 0;
+
+            if (bufIdx > 0 || imgIdx > 0)
+            {
+                fixed (VkBufferMemoryBarrier2* pBufBarriers = bufBarriers)
+                fixed (VkImageMemoryBarrier2* pImgBarriers = imgBarriers)
+                {
+                    var depInfo = new VkDependencyInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                        bufferMemoryBarrierCount = (uint)bufIdx,
+                        pBufferMemoryBarriers = pBufBarriers,
+                        imageMemoryBarrierCount = (uint)imgIdx,
+                        pImageMemoryBarriers = pImgBarriers,
+                    };
+                    device.vkCmdPipelineBarrier2(cb, &depInfo);
+                }
+            }
+
+            ArrayPool<VkImageMemoryBarrier2>.Shared.Return(imgBarriers);
+            ArrayPool<VkBufferMemoryBarrier2>.Shared.Return(bufBarriers);
+        }
+
+        private void EmitQueuedSynchroVk11(VkCommandBuffer cb,
+            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            ref int pendingImageBarriers, ref int pendingBufferBarriers)
+        {
+            var imgBarriers = ArrayPool<VkImageMemoryBarrier>.Shared.Rent(pendingImageBarriers);
+            var bufBarriers = ArrayPool<VkBufferMemoryBarrier>.Shared.Rent(pendingBufferBarriers);
+            var imgIdx = 0;
+            var bufIdx = 0;
+
+            // TODO: is there something better we can (or should) do for this?
+            VkPipelineStageFlags srcStageMask = 0;
+            VkPipelineStageFlags dstStageMask = 0;
+
+            foreach (var (resource, barrier) in pendingBarriers)
+            {
+                switch (resource)
+                {
+                    case VulkanTexture vkTex when vkTex.DeviceImage != VkImage.NULL:
+                    {
+                        ref var vkBarrier = ref imgBarriers[imgIdx++];
+                        srcStageMask |= barrier.SrcStageMask;
+                        dstStageMask |= barrier.DstStageMask;
+                        vkBarrier = new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                            srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                            srcAccessMask = barrier.SrcAccess,
+                            dstAccessMask = barrier.DstAccess,
+                            oldLayout = barrier.SrcLayout,
+                            newLayout = barrier.DstLayout,
+                            image = vkTex.DeviceImage,
+                            subresourceRange = new()
+                            {
+                                baseArrayLayer = 0,
+                                baseMipLevel = 0,
+                                layerCount = vkTex.ArrayLayers,
+                                levelCount = vkTex.MipLevels,
+                                aspectMask = GetAspectForTexture(vkTex)
+                            }
+                        };
+                    }
+                    break;
+
+                    case VulkanBuffer vkBuf:
+                        var deviceBuf = vkBuf.DeviceBuffer;
+                        goto AnyBuffer;
+                    case VulkanTexture vkTex when vkTex.StagingBuffer != VkBuffer.NULL:
+                        deviceBuf = vkTex.StagingBuffer;
+                        goto AnyBuffer;
+
+                        AnyBuffer:
+                        {
+                            ref var vkBarrier = ref bufBarriers[bufIdx++];
+                            srcStageMask |= barrier.SrcStageMask;
+                            dstStageMask |= barrier.DstStageMask;
+                            vkBarrier = new()
+                            {
+                                sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                srcAccessMask = barrier.SrcAccess,
+                                dstAccessMask = barrier.DstAccess,
+                                offset = 0,
+                                size = VK_WHOLE_SIZE,
+                                buffer = deviceBuf,
+                            };
+                        }
+                        break;
+                }
+            }
+
+            pendingBarriers.Clear();
+            pendingImageBarriers = 0;
+            pendingBufferBarriers = 0;
+
+            if (bufIdx > 0 || imgIdx > 0)
+            {
+                fixed (VkBufferMemoryBarrier* pBufBarriers = bufBarriers)
+                fixed (VkImageMemoryBarrier* pImgBarriers = imgBarriers)
+                {
+                    vkCmdPipelineBarrier(cb,
+                        srcStageMask,
+                        dstStageMask,
+                        0, 0, null,
+                        (uint)bufIdx, pBufBarriers,
+                        (uint)imgIdx, pImgBarriers);
+                }
+            }
+
+            ArrayPool<VkImageMemoryBarrier>.Shared.Return(imgBarriers);
+            ArrayPool<VkBufferMemoryBarrier>.Shared.Return(bufBarriers);
         }
 
         [DoesNotReturn]
@@ -411,6 +896,11 @@ namespace Veldrid.Vulkan2
                 {
                     RecycleStagingInfo(ref _currentStagingInfo);
                 }
+
+                _pendingImageBarriers = 0;
+                _pendingBufferBarriers = 0;
+                _pendingBarriers.Clear();
+                _resourceSyncInfo.Clear();
 
                 // We always want to pre-allocate BOTH our main command buffer AND our sync command buffer
                 Span<VkCommandBuffer> requestedBuffers = [default, default];
