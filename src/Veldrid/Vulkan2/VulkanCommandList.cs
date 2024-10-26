@@ -30,7 +30,6 @@ namespace Veldrid.Vulkan2
         private readonly object _commandBufferListLock = new();
         private readonly Stack<VkCommandBuffer> _availableCommandBuffers = new();
         private readonly Stack<StagingResourceInfo> _availableStagingInfo = new();
-        private readonly Dictionary<VkCommandBuffer, StagingResourceInfo> _submittedStagingInfos = new();
         private readonly Dictionary<ISynchronizedResource, ResourceSyncInfo> _resourceSyncInfo = new();
         private readonly List<(ISynchronizedResource Resource, ResourceBarrierInfo Barrier)> _pendingBarriers = new();
         private int _pendingImageBarriers;
@@ -167,13 +166,12 @@ namespace Veldrid.Vulkan2
             lock (_commandBufferListLock)
             {
                 var needToCreate = buffers.Length;
-                while (needToCreate > 0 && _availableCommandBuffers.TryPeek(out var cb))
+                while (needToCreate > 0 && _availableCommandBuffers.TryPop(out var cb))
                 {
                     VulkanUtil.CheckResult(vkResetCommandBuffer(cb, 0));
                     needToCreate--;
                     buffers[needToCreate] = cb;
                 }
-
                 if (needToCreate <= 0) { return; }
 
                 // note: access to the underlying pool must be synchronized by the application
@@ -236,6 +234,7 @@ namespace Veldrid.Vulkan2
             VkCommandBuffer SyncCb,
             VkSemaphore SyncSemaphore,
             VkSemaphore MainCompleteSemaphore,
+            StagingResourceInfo StagingResourceInfo,
             Action<VulkanCommandList>? OnSubmitCompleted,
             bool FenceWasRented
             );
@@ -342,14 +341,7 @@ namespace Veldrid.Vulkan2
             }
 
             RefCount.Increment();
-            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, mainCompleteSem, onSubmitCompleted, fenceWasRented));
-
-            lock (_commandBufferListLock)
-            {
-                // record that we've submitted this command list, and associate the relevant resources
-                // note: we don't need to add the syncCb here, because it's part of the FenceCompletionCallbackInfo registered above
-                _submittedStagingInfos.Add(cb, resourceInfo);
-            }
+            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, mainCompleteSem, resourceInfo, onSubmitCompleted, fenceWasRented));
 
             return mainCompleteSem;
         }
@@ -361,14 +353,8 @@ namespace Veldrid.Vulkan2
             try
             {
                 // a submission finished, lets get the associated resource info and remove it from the list
-                StagingResourceInfo resourceInfo;
                 lock (_commandBufferListLock)
                 {
-                    if (!_submittedStagingInfos.Remove(callbackInfo.MainCb, out resourceInfo))
-                    {
-                        if (!errored) ThrowUnreachableStateException();
-                    }
-
                     // return the command buffers
                     _availableCommandBuffers.Push(callbackInfo.MainCb);
                     _availableCommandBuffers.Push(callbackInfo.SyncCb);
@@ -393,6 +379,7 @@ namespace Veldrid.Vulkan2
                 }
 
                 // recycle the staging info
+                var resourceInfo = callbackInfo.StagingResourceInfo;
                 RecycleStagingInfo(ref resourceInfo);
 
                 // and finally, invoke the callback if it was provided
@@ -1103,6 +1090,7 @@ namespace Veldrid.Vulkan2
                     AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
                 }
             });
+            EmitQueuedSynchro();
 
             // then actually execute the copy
             // conveniently, BufferCopyCommand has the same layout as VkBufferCopy! We can issue a bunch of copies at once, as a result.

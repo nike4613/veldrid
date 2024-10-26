@@ -242,6 +242,16 @@ namespace Veldrid.Vulkan2
             if (_disposed) return;
             _disposed = true;
 
+            // if we have any unbalanced mappings, clean those up first
+            lock (_mappedResourcesLock)
+            {
+                foreach (var (resource, mapInfo) in _mappedResources)
+                {
+                    // force-deallocate the mapping by directly calling RefZeroed
+                    mapInfo.RefZeroed();
+                }
+            }
+
             // TODO: destroy all other associated information
             MainSwapchain?.Dispose();
 
