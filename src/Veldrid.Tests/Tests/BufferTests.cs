@@ -49,6 +49,7 @@ namespace Veldrid.Tests
             {
                 Assert.Equal(i * 2, view[i]);
             }
+            GD.Unmap(buffer);
         }
 
         [Fact]

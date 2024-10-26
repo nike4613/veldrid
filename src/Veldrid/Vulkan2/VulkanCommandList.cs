@@ -765,7 +765,7 @@ namespace Veldrid.Vulkan2
                             ref var vkBarrier = ref bufBarriers[bufIdx++];
                             vkBarrier = new()
                             {
-                                sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                sType = VkStructureType.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
                                 srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                 srcStageMask = (VkPipelineStageFlags2)(uint)barrier.SrcStageMask,
@@ -1073,7 +1073,7 @@ namespace Veldrid.Vulkan2
             var stagingBuffer = Device.GetPooledStagingBuffer(sizeInBytes);
             AddStagingResource(stagingBuffer);
 
-            Device.UpdateBuffer(stagingBuffer, bufferOffsetInBytes, source, sizeInBytes);
+            Device.UpdateBuffer(stagingBuffer, 0, source, sizeInBytes);
             CopyBuffer(stagingBuffer, 0, buffer, bufferOffsetInBytes, sizeInBytes);
         }
 

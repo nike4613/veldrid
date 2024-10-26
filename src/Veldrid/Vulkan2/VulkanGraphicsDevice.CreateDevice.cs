@@ -386,6 +386,19 @@ namespace Veldrid.Vulkan2
                         deviceCreateInfo.pNext = &dynamicRenderingFeatures;
                     }
 
+                    if (dcs.HasSync2Ext)
+                    {
+                        // make sure we enable synchronization2
+                        var sync2Features = new VkPhysicalDeviceSynchronization2Features()
+                        {
+                            sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+                            pNext = deviceCreateInfo.pNext,
+                            synchronization2 = (VkBool32)true,
+                        };
+
+                        deviceCreateInfo.pNext = &sync2Features;
+                    }
+
                     VulkanUtil.CheckResult(vkCreateDevice(dcs.PhysicalDevice, &deviceCreateInfo, null, &device));
                 }
 
