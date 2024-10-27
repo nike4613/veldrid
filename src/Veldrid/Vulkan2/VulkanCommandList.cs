@@ -629,14 +629,21 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        private bool SyncResourceToState(ref SyncState state, ISynchronizedResource resource, in SyncRequest req)
+        private bool SyncResourceToState(ref SyncState state, ISynchronizedResource resource, SyncRequest req)
         {
+            var resourceIsImage = resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL;
+            if (!resourceIsImage)
+            {
+                // the resource isn't an image, don't actually use the layout
+                req.Layout = 0;
+            }
+
             if (TryBuildSyncBarrier(ref state, in req, out var barrier))
             {
                 // a barrier is needed, mark appropriately
                 _pendingBarriers.Add((resource, barrier));
 
-                if (resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL)
+                if (resourceIsImage)
                 {
                     _pendingImageBarriers++;
                 }
@@ -1144,13 +1151,252 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        protected override void CopyTextureCore(Texture source,
+        protected override void CopyTextureCore(
+            Texture source,
             uint srcX, uint srcY, uint srcZ, uint srcMipLevel, uint srcBaseArrayLayer,
             Texture destination,
             uint dstX, uint dstY, uint dstZ, uint dstMipLevel, uint dstBaseArrayLayer,
             uint width, uint height, uint depth, uint layerCount)
         {
-            throw new NotImplementedException();
+            var srcTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
+            var dstTex = Util.AssertSubtype<Texture, VulkanTexture>(destination);
+
+            EnsureNoRenderPass();
+
+            var srcIsStaging = (srcTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
+            var dstIsStaging = (dstTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
+
+            // before doing anything, make sure we're sync'd
+            SyncResource(srcTex, new()
+            {
+                Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
+                },
+            });
+            SyncResource(dstTex, new()
+            {
+                Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                BarrierMasks = new()
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
+                },
+            });
+            EmitQueuedSynchro();
+
+            if (!srcIsStaging && !dstIsStaging)
+            {
+                // both textures are non-staging, we can issue a simple CopyImage command
+                var copyRegion = new VkImageCopy()
+                {
+                    extent = new() { width = width, height = height, depth = depth },
+                    srcOffset = new() { x = (int)srcX, y = (int)srcY, z = (int)srcZ },
+                    dstOffset = new() { x = (int)dstX, y = (int)dstY, z = (int)dstZ },
+                    srcSubresource = new()
+                    {
+                        aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                        layerCount = layerCount,
+                        mipLevel = srcMipLevel,
+                        baseArrayLayer = srcBaseArrayLayer,
+                    },
+                    dstSubresource = new()
+                    {
+                        aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                        layerCount = layerCount,
+                        mipLevel = dstMipLevel,
+                        baseArrayLayer = dstBaseArrayLayer,
+                    },
+                };
+                vkCmdCopyImage(_currentCb,
+                    srcTex.DeviceImage, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    dstTex.DeviceImage, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &copyRegion);
+            }
+            else if (srcIsStaging && !dstIsStaging)
+            {
+                // copy from a staging texture to a non-staging texture
+                var srcBuf = srcTex.StagingBuffer;
+                var srcLayout = srcTex.GetSubresourceLayout(srcMipLevel, srcBaseArrayLayer);
+
+                VkImageSubresourceLayers dstSubresource = new()
+                {
+                    aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                    layerCount = layerCount,
+                    mipLevel = dstMipLevel,
+                    baseArrayLayer = dstBaseArrayLayer
+                };
+
+                Util.GetMipDimensions(srcTex, srcMipLevel, out var mipWidth, out var mipHeight, out _);
+                var blockSize = FormatHelpers.IsCompressedFormat(srcTex.Format) ? 4u : 1u;
+                var bufferRowLength = Math.Max(mipWidth, blockSize);
+                var bufferImageHeight = Math.Max(mipHeight, blockSize);
+                var compressedX = srcX / blockSize;
+                var compressedY = srcY / blockSize;
+                var blockSizeInBytes = blockSize == 1
+                    ? FormatSizeHelpers.GetSizeInBytes(srcTex.Format)
+                    : FormatHelpers.GetBlockSizeInBytes(srcTex.Format);
+                var rowPitch = FormatHelpers.GetRowPitch(bufferRowLength, srcTex.Format);
+                var depthPitch = FormatHelpers.GetDepthPitch(rowPitch, bufferImageHeight, srcTex.Format);
+
+                var copyWidth = Math.Min(width, mipWidth);
+                var copyheight = Math.Min(height, mipHeight);
+
+                VkBufferImageCopy regions = new()
+                {
+                    bufferOffset = srcLayout.offset
+                        + (srcZ * depthPitch)
+                        + (compressedY * rowPitch)
+                        + (compressedX * blockSizeInBytes),
+                    bufferRowLength = bufferRowLength,
+                    bufferImageHeight = bufferImageHeight,
+                    imageExtent = new VkExtent3D() { width = copyWidth, height = copyheight, depth = depth },
+                    imageOffset = new VkOffset3D() { x = (int)dstX, y = (int)dstY, z = (int)dstZ },
+                    imageSubresource = dstSubresource
+                };
+
+                vkCmdCopyBufferToImage(_currentCb, srcBuf,
+                    dstTex.DeviceImage, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &regions);
+            }
+            else if (!srcIsStaging && dstIsStaging)
+            {
+                // copy from real texture to staging texture
+                var srcImg = srcTex.DeviceImage;
+                var dstBuf = dstTex.StagingBuffer;
+
+                var srcAspect = (srcTex.Usage & TextureUsage.DepthStencil) != 0
+                    ? VkImageAspectFlags.VK_IMAGE_ASPECT_DEPTH_BIT
+                    : VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT;
+
+                Util.GetMipDimensions(dstTex, dstMipLevel, out var mipWidth, out var mipHeight);
+                var blockSize = FormatHelpers.IsCompressedFormat(dstTex.Format) ? 4u : 1u;
+                var bufferRowLength = Math.Max(mipWidth, blockSize);
+                var bufferImageHeight = Math.Max(mipHeight, blockSize);
+                var compressedDstX = dstX / blockSize;
+                var compressedDstY = dstY / blockSize;
+                var blockSizeInBytes = blockSize == 1
+                    ? FormatSizeHelpers.GetSizeInBytes(dstTex.Format)
+                    : FormatHelpers.GetBlockSizeInBytes(dstTex.Format);
+                var rowPitch = FormatHelpers.GetRowPitch(bufferRowLength, dstTex.Format);
+                var depthPitch = FormatHelpers.GetDepthPitch(rowPitch, bufferImageHeight, dstTex.Format);
+
+                var layers = ArrayPool<VkBufferImageCopy>.Shared.Rent((int)layerCount);
+                for (var layer = 0u; layer < layerCount; layer++)
+                {
+                    var dstLayout = dstTex.GetSubresourceLayout(dstMipLevel, dstBaseArrayLayer + layer);
+
+                    var srcSubresource = new VkImageSubresourceLayers()
+                    {
+                        aspectMask = srcAspect,
+                        layerCount = 1,
+                        mipLevel = srcMipLevel,
+                        baseArrayLayer = srcBaseArrayLayer + layer
+                    };
+
+                    var region = new VkBufferImageCopy()
+                    {
+                        bufferRowLength = bufferRowLength,
+                        bufferImageHeight = bufferImageHeight,
+                        bufferOffset = dstLayout.offset
+                            + (dstZ * depthPitch)
+                            + (compressedDstY * rowPitch)
+                            + (compressedDstX * blockSizeInBytes),
+                        imageExtent = new() { width = width, height = height, depth = depth },
+                        imageOffset = new() { x = (int)srcX, y = (int)srcY, z = (int)srcZ },
+                        imageSubresource = srcSubresource
+                    };
+
+                    layers[layer] = region;
+                }
+
+                fixed (VkBufferImageCopy* pLayers = layers)
+                {
+                    vkCmdCopyImageToBuffer(_currentCb,
+                        srcImg, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        dstBuf,
+                        layerCount, pLayers);
+                }
+
+                ArrayPool<VkBufferImageCopy>.Shared.Return(layers);
+            }
+            else
+            {
+                Debug.Assert(srcIsStaging && dstIsStaging);
+                // both buffers are staging, just do a (set of) buffer->buffer copies
+                var srcBuf = srcTex.StagingBuffer;
+                var srcLayout = srcTex.GetSubresourceLayout(srcMipLevel, srcBaseArrayLayer);
+                var dstBuf = dstTex.StagingBuffer;
+                var dstLayout = dstTex.GetSubresourceLayout(dstMipLevel, dstBaseArrayLayer);
+
+                var zLimit = uint.Max(depth, layerCount);
+                var itemIndex = 0;
+                VkBufferCopy[] copyRegions;
+                if (!FormatHelpers.IsCompressedFormat(srcTex.Format))
+                {
+                    // uncompressed format, emit a copy for regions according to each height value
+                    copyRegions = ArrayPool<VkBufferCopy>.Shared.Rent((int)(zLimit * height));
+                    var pixelSize = FormatSizeHelpers.GetSizeInBytes(srcTex.Format);
+                    for (var zz = 0u; zz < zLimit; zz++)
+                    {
+                        for (var yy = 0u; yy < height; yy++)
+                        {
+                            copyRegions[itemIndex++] = new()
+                            {
+                                srcOffset = srcLayout.offset
+                                    + (srcLayout.depthPitch * (zz + srcZ))
+                                    + (srcLayout.rowPitch * (yy + srcY))
+                                    + (pixelSize * srcX),
+                                dstOffset = dstLayout.offset
+                                    + (dstLayout.depthPitch * (zz + dstZ))
+                                    + (dstLayout.rowPitch * (yy + dstY))
+                                    + (pixelSize * dstX),
+                                size = width * pixelSize,
+                            };
+                        }
+                    }
+                }
+                else
+                {
+                    // compressed format, emit a copy for regions according to compressed rows
+                    var denseRowSize = FormatHelpers.GetRowPitch(width, source.Format);
+                    var numRows = FormatHelpers.GetNumRows(height, source.Format);
+                    var compressedSrcX = srcX / 4;
+                    var compressedSrcY = srcY / 4;
+                    var compressedDstX = dstX / 4;
+                    var compressedDstY = dstY / 4;
+                    var blockSizeInBytes = FormatHelpers.GetBlockSizeInBytes(source.Format);
+
+                    copyRegions = ArrayPool<VkBufferCopy>.Shared.Rent((int)(zLimit * numRows));
+                    for (var zz = 0u; zz < zLimit; zz++)
+                    {
+                        for (var row = 0u; row < numRows; row++)
+                        {
+                            copyRegions[itemIndex++] = new()
+                            {
+                                srcOffset = srcLayout.offset
+                                    + (srcLayout.depthPitch * (zz + srcZ))
+                                    + (srcLayout.rowPitch * (row + compressedSrcY))
+                                    + (blockSizeInBytes * compressedSrcX),
+                                dstOffset = dstLayout.offset
+                                    + (dstLayout.depthPitch * (zz + dstZ))
+                                    + (dstLayout.rowPitch * (row + compressedDstY))
+                                    + (blockSizeInBytes * compressedDstX),
+                                size = denseRowSize
+                            };
+                        }
+                    }
+                }
+
+                // we now have a set of copy regions, now we just need to submit the copy
+                fixed (VkBufferCopy* pCopyRegions = copyRegions)
+                {
+                    vkCmdCopyBuffer(_currentCb, srcBuf, dstBuf, (uint)itemIndex, pCopyRegions);
+                }
+                ArrayPool<VkBufferCopy>.Shared.Return(copyRegions);
+            }
         }
 
         private protected override void PushDebugGroupCore(ReadOnlySpan<char> name)
