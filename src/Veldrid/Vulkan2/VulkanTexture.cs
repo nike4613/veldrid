@@ -42,6 +42,9 @@ namespace Veldrid.Vulkan2
         public VkBuffer StagingBuffer => _stagingBuffer;
         public VkMemoryBlock Memory => _memory;
 
+        public uint ActualArrayLayers => _actualImageArrayLayers;
+        public bool IsSwapchainImage => _isSwapchainTexture;
+
 
         internal VulkanTexture(
             VulkanGraphicsDevice gd, in TextureDescription description,
@@ -89,7 +92,7 @@ namespace Veldrid.Vulkan2
                 vkDestroyBuffer(_gd.Device, _stagingBuffer, null);
             }
 
-            if (_image != VkImage.NULL)
+            if (_image != VkImage.NULL && !_isSwapchainTexture)
             {
                 vkDestroyImage(_gd.Device, _image, null);
             }

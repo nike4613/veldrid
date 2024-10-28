@@ -289,7 +289,6 @@ namespace Veldrid.Vulkan2
                     {
                         sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                         mipLevels = description.MipLevels,
-                        arrayLayers = description.ArrayLayers,
                         imageType = VkFormats.VdToVkTextureType(description.Type),
                         extent = new()
                         {
@@ -311,6 +310,7 @@ namespace Veldrid.Vulkan2
                         imageCreateInfo.flags |= VkImageCreateFlags.VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
                         actualArrayLayers = 6 * description.ArrayLayers;
                     }
+                    imageCreateInfo.arrayLayers = actualArrayLayers;
 
                     var subresourceCount = description.MipLevels * description.Depth * actualArrayLayers;
 
@@ -353,6 +353,7 @@ namespace Veldrid.Vulkan2
 
                         stagingSize += depthPitch * mipDepth;
                     }
+                    stagingSize *= description.ArrayLayers;
 
                     var bufferCreateInfo = new VkBufferCreateInfo()
                     {

@@ -590,11 +590,15 @@ namespace Veldrid.Vulkan2
                     barrier.SrcStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
                 }
                 barrier.SrcLayout = state.CurrentImageLayout;
-                barrier.DstLayout = req.Layout;
+                barrier.DstLayout = req.Layout == 0 ? state.CurrentImageLayout : req.Layout;
             }
 
             // Finally, update the resource's image layout
-            state.CurrentImageLayout = req.Layout;
+            if (req.Layout != 0)
+            {
+                // note: a zero layout means IGNORE
+                state.CurrentImageLayout = req.Layout;
+            }
 
             return needsBarrier;
         }
@@ -742,7 +746,7 @@ namespace Veldrid.Vulkan2
                             {
                                 baseArrayLayer = 0,
                                 baseMipLevel = 0,
-                                layerCount = vkTex.ArrayLayers,
+                                layerCount = vkTex.ActualArrayLayers,
                                 levelCount = vkTex.MipLevels,
                                 aspectMask = GetAspectForTexture(vkTex)
                             }
@@ -839,7 +843,7 @@ namespace Veldrid.Vulkan2
                             {
                                 baseArrayLayer = 0,
                                 baseMipLevel = 0,
-                                layerCount = vkTex.ArrayLayers,
+                                layerCount = vkTex.ActualArrayLayers,
                                 levelCount = vkTex.MipLevels,
                                 aspectMask = GetAspectForTexture(vkTex)
                             }
