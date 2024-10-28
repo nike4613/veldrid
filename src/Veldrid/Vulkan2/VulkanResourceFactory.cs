@@ -404,7 +404,12 @@ namespace Veldrid.Vulkan2
                 // the texture is either:
                 // a) a buffer, so the image layout doesn't matter, or
                 // b) an image, created with an initial layout of PREINITIALIZED
-                result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED;
+                if (!isStaging)
+                {
+                    // while it is not necessary for correctness, to avoid emitting a spurious buffer barrier,
+                    // we don't want to track image layout for staging images
+                    result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED;
+                }
 
                 return result;
             }
@@ -431,10 +436,14 @@ namespace Veldrid.Vulkan2
         {
             var image = new VkImage(nativeTexture);
 
-            return new VulkanTexture(_gd, description,
+            var result = new VulkanTexture(_gd, description,
                 image, default, default,
                 isSwapchainTexture: false,
                 leaveOpen: true);
+
+            result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+
+            return result;
         }
 
         public unsafe override VulkanTextureView CreateTextureView(in TextureViewDescription description)

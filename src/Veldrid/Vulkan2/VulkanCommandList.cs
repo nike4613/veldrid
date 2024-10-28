@@ -488,7 +488,7 @@ namespace Veldrid.Vulkan2
                     {
                         // this is an access we declare to be valid
                         var accessIndex = ReadersAccessIndex((VkAccessFlags)accessBit);
-                        result |= 1u << (BitsPerStage * stageIndex + accessIndex);
+                        result |= 1u << ((BitsPerStage * stageIndex) + accessIndex);
                     }
                 }
             }
@@ -519,7 +519,7 @@ namespace Veldrid.Vulkan2
                 requestStages |= TesselationStages;
             }
 
-            var needsLayoutTransition = req.Layout != state.CurrentImageLayout;
+            var needsLayoutTransition = req.Layout != state.CurrentImageLayout && state.CurrentImageLayout != 0;
             var writeAccesses = requestAccess & AllWriteAccesses;
             var needsWrite = writeAccesses != 0 || needsLayoutTransition;
 
@@ -604,6 +604,7 @@ namespace Veldrid.Vulkan2
             ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, resource, out var exists);
             if (!exists)
             {
+                // we don't want to pull in layout here, because we special-case that when generating barriers
                 localSyncInfo = new();
             }
 
@@ -620,6 +621,7 @@ namespace Veldrid.Vulkan2
             {
                 localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
                 localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
+                // we want to make note of the first layout that we expect, so we can transition into it at the right time
                 if (localSyncInfo.Expected.Layout == 0)
                 {
                     localSyncInfo.Expected.Layout = req.Layout;
