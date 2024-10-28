@@ -519,7 +519,8 @@ namespace Veldrid.Vulkan2
                 requestStages |= TesselationStages;
             }
 
-            var needsLayoutTransition = req.Layout != state.CurrentImageLayout && state.CurrentImageLayout != 0;
+            // note: if the target layout is UNDEFINED, we treat that as "no change". If the current layout is UNDEFINED, this is the first (potential) barrier in this CL
+            var needsLayoutTransition = req.Layout != 0 && state.CurrentImageLayout != 0 && req.Layout != state.CurrentImageLayout;
             var writeAccesses = requestAccess & AllWriteAccesses;
             var needsWrite = writeAccesses != 0 || needsLayoutTransition;
 

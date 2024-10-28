@@ -788,16 +788,20 @@ namespace Veldrid.Vulkan2
             {
                 // note: we DON'T need an explicit flush here, because queue submission does so implicitly
 
-                // the buffer WAS written to though, make sure we note that
-                copySrcBuffer.SyncState = new()
+                // QueueLock is how we sync global sync state
+                lock (QueueLock)
                 {
-                    LastWriter = new()
+                    // the buffer WAS written to though, make sure we note that
+                    copySrcBuffer.SyncState = new()
                     {
-                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
-                    },
-                    PerStageReaders = 0,
-                };
+                        LastWriter = new()
+                        {
+                            AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                        },
+                        PerStageReaders = 0,
+                    };
+                }
 
                 var cl = GetAndBeginCommandList();
                 cl.AddStagingResource(copySrcBuffer);
@@ -818,15 +822,19 @@ namespace Veldrid.Vulkan2
 
                 VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
 
-                vkBuffer.SyncState = new()
+                // QueueLock is how we sync global sync state
+                lock (QueueLock)
                 {
-                    LastWriter = new()
+                    vkBuffer.SyncState = new()
                     {
-                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
-                    },
-                    PerStageReaders = 0,
-                };
+                        LastWriter = new()
+                        {
+                            AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                        },
+                        PerStageReaders = 0,
+                    };
+                }
             }
         }
 
@@ -861,7 +869,8 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private static unsafe void UpdateStagingTexture(VulkanTexture tex,
+        private unsafe void UpdateStagingTexture(
+            VulkanTexture tex,
             nint source, uint x, uint y, uint z,
             uint width, uint height, uint depth,
             uint mipLevel, uint arrayLayer)
@@ -881,15 +890,20 @@ namespace Veldrid.Vulkan2
                 width, height, depth,
                 tex.Format);
 
-            tex.SyncState = new()
+            // QueueLock synchronizes access to global sync state
+            lock (QueueLock)
             {
-                LastWriter = new()
+                tex.SyncState = new()
                 {
-                    AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
-                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
-                },
-                PerStageReaders = 0,
-            };
+                    LastWriter = new()
+                    {
+                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                    },
+                    PerStageReaders = 0,
+                    // note: staging textures don't track layout
+                };
+            }
         }
 
 
@@ -976,7 +990,11 @@ namespace Veldrid.Vulkan2
                         {
                             StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                             AccessMask = VkAccessFlags.VK_ACCESS_HOST_READ_BIT,
-                        }
+                        },
+                        // note: host reads must be done in PREINITIALIZED or GENERAL.
+                        // Because we don't have a good wat to know which we're in here, we always transition
+                        // to GENERAL for a map operation.
+                        Layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
                     });
                     var (_, fence) = EndAndSubmitCommands(cl);
                     // now we need to wait for our fence so we know that the sync has gone through
@@ -1074,15 +1092,19 @@ namespace Veldrid.Vulkan2
 
                         VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
 
-                        syncState = new()
+                        // the queue lock is what we use to sync access to global sync state
+                        lock (QueueLock)
                         {
-                            PerStageReaders = 0,
-                            LastWriter = new()
+                            syncState = new()
                             {
-                                AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
-                                StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
-                            }
-                        };
+                                PerStageReaders = 0,
+                                LastWriter = new()
+                                {
+                                    AccessMask = VkAccessFlags.VK_ACCESS_HOST_WRITE_BIT,
+                                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                                }
+                            };
+                        }
                     }
 
                     // AFTER syncing, decrement to (possibly) unmap
