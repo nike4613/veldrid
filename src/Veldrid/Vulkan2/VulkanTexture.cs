@@ -35,8 +35,10 @@ namespace Veldrid.Vulkan2
         public ResourceRefCount RefCount { get; }
         public override bool IsDisposed => RefCount.IsDisposed;
 
-        private SyncState _syncState;
-        public ref SyncState SyncState => ref _syncState;
+        private readonly SyncState[] _syncStates;
+        public Span<SyncState> AllSyncStates => _syncStates;
+        public ref SyncState SyncStateForSubresource(SyncSubresource subresource)
+            => ref _syncStates[_image != VkImage.NULL ? (subresource.Mip * _actualImageArrayLayers) + subresource.Layer : 0];
 
         public VkImage DeviceImage => _image;
         public VkBuffer StagingBuffer => _stagingBuffer;
@@ -74,6 +76,8 @@ namespace Veldrid.Vulkan2
             _actualImageArrayLayers = (description.Usage & TextureUsage.Cubemap) != 0
                 ? 6 * description.ArrayLayers
                  : description.ArrayLayers;
+
+            _syncStates = new SyncState[image != VkImage.NULL ? description.MipLevels * _actualImageArrayLayers : 1];
 
             RefCount = new(this);
         }

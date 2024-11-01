@@ -409,7 +409,7 @@ namespace Veldrid.Vulkan2
                 {
                     // while it is not necessary for correctness, to avoid emitting a spurious buffer barrier,
                     // we don't want to track image layout for staging images
-                    result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED;
+                    result.AllSyncStates.Fill(new() { CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_PREINITIALIZED });
                 }
 
                 return result;
@@ -442,7 +442,8 @@ namespace Veldrid.Vulkan2
                 isSwapchainTexture: false,
                 leaveOpen: true);
 
-            result.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+            // we don't know what the initial layout is, so we assume UNDEFINED
+            result.AllSyncStates.Fill(default);
 
             return result;
         }

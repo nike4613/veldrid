@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -29,7 +30,13 @@ namespace Veldrid.Vulkan2
         public ResourceRefCount RefCount { get; }
         public override bool IsDisposed => RefCount.IsDisposed;
 
-        public ref SyncState SyncState => ref _syncState;
+        public Span<SyncState> AllSyncStates => new(ref _syncState);
+        ref SyncState ISynchronizedResource.SyncStateForSubresource(SyncSubresource subresource)
+        {
+            Debug.Assert(subresource == default);
+            return ref _syncState;
+        }
+
         public VkBuffer DeviceBuffer => _buffer;
         public ref readonly VkMemoryBlock Memory => ref _memory;
 

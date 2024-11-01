@@ -30,10 +30,16 @@ namespace Veldrid.Vulkan2
         private readonly object _commandBufferListLock = new();
         private readonly Stack<VkCommandBuffer> _availableCommandBuffers = new();
         private readonly Stack<StagingResourceInfo> _availableStagingInfo = new();
-        private readonly Dictionary<ISynchronizedResource, ResourceSyncInfo> _resourceSyncInfo = new();
-        private readonly List<(ISynchronizedResource Resource, ResourceBarrierInfo Barrier)> _pendingBarriers = new();
+        private readonly Dictionary<(ISynchronizedResource Rs, SyncSubresource Sr), ResourceSyncInfo> _resourceSyncInfo = new();
+        private readonly List<PendingBarrier> _pendingBarriers = new();
         private int _pendingImageBarriers;
         private int _pendingBufferBarriers;
+
+        private readonly record struct PendingBarrier(
+            ISynchronizedResource Resource,
+            SyncSubresourceRange Subresources, // we try to unify identical barriers where possible
+            ResourceBarrierInfo Barrier
+            );
 
         // Transient per-use fields
         private StagingResourceInfo _currentStagingInfo;
@@ -603,66 +609,287 @@ namespace Veldrid.Vulkan2
             return needsBarrier;
         }
 
-        // returns true if the sync generated a barrier
-        public bool SyncResource(ISynchronizedResource resource, in SyncRequest req)
+        public bool SyncResource(VulkanBuffer resource, in SyncRequest req)
         {
-            ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, resource, out var exists);
-            if (!exists)
-            {
-                // we don't want to pull in layout here, because we special-case that when generating barriers
-                localSyncInfo = new();
-            }
-
-            var result = false;
-
-            if (SyncResourceToState(ref localSyncInfo.LocalState, resource, req))
-            {
-                localSyncInfo.HasBarrier = true;
-                result = true;
-            }
-
-            // mark the expected state appropriately
-            if (!localSyncInfo.HasBarrier)
-            {
-                localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
-                localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
-                // we want to make note of the first layout that we expect, so we can transition into it at the right time
-                if (localSyncInfo.Expected.Layout == 0)
-                {
-                    localSyncInfo.Expected.Layout = req.Layout;
-                }
-            }
-
-            return result;
+            var realReq = req;
+            realReq.Layout = 0;
+            return SyncResourceCore(resource, new(0, 0, 1, 1), false, realReq);
         }
 
-        private bool SyncResourceToState(ref SyncState state, ISynchronizedResource resource, SyncRequest req)
+        public bool SyncResource(VulkanTexture resource, in SyncRequest req)
+            => SyncResource(resource, new(0, 0, resource.ActualArrayLayers, resource.MipLevels), req);
+
+        public bool SyncResource(VulkanTexture resource, SyncSubresourceRange subresources, in SyncRequest req)
         {
-            var resourceIsImage = resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL;
-            if (!resourceIsImage)
+            if (resource.DeviceImage == VkImage.NULL)
             {
-                // the resource isn't an image, don't actually use the layout
-                req.Layout = 0;
+                // staging texture, actually a buffer
+                var realReq = req;
+                realReq.Layout = 0;
+                return SyncResourceCore(resource, new(0, 0, 1, 1), false, realReq);
+            }
+            else
+            {
+                // real texture
+                Debug.Assert(subresources.BaseLayer < resource.ActualArrayLayers);
+                Debug.Assert(subresources.BaseLayer + subresources.NumLayers <= resource.ActualArrayLayers);
+                Debug.Assert(subresources.BaseMip < resource.MipLevels);
+                Debug.Assert(subresources.BaseMip + subresources.NumMips <= resource.MipLevels);
+
+                return SyncResourceCore(resource, subresources, true, req);
+            }
+        }
+
+        public bool SyncResourceDyn(ISynchronizedResource resource, SyncSubresourceRange subresources, in SyncRequest req)
+            => resource switch
+            {
+                VulkanBuffer buf => SyncResource(buf, req),
+                VulkanTexture tex => SyncResource(tex, subresources, req),
+                _ => Illegal.Value<ISynchronizedResource, bool>(),
+            };
+
+        // TODO: shouldn't take ISynchronizedResource, should be overloaded based on the specific kind so that subresources (and ranges) can make sense
+        // TODO: should be able to specify a subresource range, where we track changes independently, but merge the resulting barrier
+        // returns true if the sync generated a barrier
+        private bool SyncResourceCore(ISynchronizedResource resource, SyncSubresourceRange subresources, bool resourceIsImage, in SyncRequest req)
+        {
+            if (resourceIsImage)
+            {
+                Debug.Assert(resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL);
+            }
+            else
+            {
+                Debug.Assert(resource is VulkanBuffer or VulkanTexture { DeviceImage.Value: 0 });
             }
 
-            if (TryBuildSyncBarrier(ref state, in req, out var barrier))
-            {
-                // a barrier is needed, mark appropriately
-                _pendingBarriers.Add((resource, barrier));
+            var needsAnyBarrier = false;
+            var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
+            var currentBarrier = new ResourceBarrierInfo();
 
-                if (resourceIsImage)
+            for (var i = 0; i < subresources.NumLayers; i++)
+            {
+                var array = (uint)(i + subresources.BaseLayer);
+                var localSubresources = new SyncSubresourceRange(array, 0, 1, 0);
+                var localBarrier = new ResourceBarrierInfo();
+
+                for (var j = 0; j < subresources.NumMips; j++)
                 {
-                    _pendingImageBarriers++;
+                    var mip = (uint)(j + subresources.BaseMip);
+                    var subresource = new SyncSubresource(array, mip);
+                    var singleSubresourceRange = new SyncSubresourceRange(array, mip, 1, 1);
+                    ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, (resource, subresource), out var exists);
+                    if (!exists)
+                    {
+                        localSyncInfo.IsImage = resourceIsImage;
+                    }
+
+                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, out var barrier))
+                    {
+                        // a barrier is needed for this subresource, mark it and try to update in local info
+                        localSyncInfo.HasBarrier = true;
+                        needsAnyBarrier = true;
+
+                        // try to merge barriers
+                        if (TryMergeBarriers(ref localBarrier, barrier)
+                            // the barriers could be merged, try to merge this subresource range
+                            && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
+                        {
+                            // both barriers and subresource ranges could be moreged, no more work to do here
+                        }
+                        else
+                        {
+                            // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                            EnqueueBarrier(resource, localSubresources, localBarrier, resourceIsImage);
+                            localSubresources = singleSubresourceRange;
+                            localBarrier = barrier;
+                        }
+                    }
+
+                    // mark the expected state appropriately
+                    if (!localSyncInfo.HasBarrier)
+                    {
+                        localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
+                        localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
+                        // we want to make note of the first layout that we expect, so we can transition into it at the right time
+                        if (localSyncInfo.Expected.Layout == 0)
+                        {
+                            localSyncInfo.Expected.Layout = req.Layout;
+                        }
+                    }
+                }
+
+                // try to merge the local barriers with the current barriers (just like in the loop)
+                if (TryMergeBarriers(ref currentBarrier, localBarrier)
+                    // the barriers could be merged, try to merge this subresource range
+                    && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
+                {
+                    // both barriers and subresource ranges could be moreged, no more work to do here
                 }
                 else
                 {
-                    _pendingBufferBarriers++;
+                    // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                    EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
+                    currentSubresources = localSubresources;
+                    currentBarrier = localBarrier;
+                }
+            }
+
+            // after we've hit all subresources, enqueue what's left
+            EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
+
+            return needsAnyBarrier;
+        }
+
+        private static bool TryMergeBarriers(ref ResourceBarrierInfo targetBarrier, in ResourceBarrierInfo sourceBarrier)
+        {
+            if (targetBarrier == default)
+            {
+                // if we have no barriers for this layer yet, mark it
+                targetBarrier = sourceBarrier;
+                return true;
+            }
+            else if (targetBarrier.SrcLayout == sourceBarrier.SrcLayout && targetBarrier.DstLayout == sourceBarrier.DstLayout)
+            {
+                // if the new barrier has the same src/dst layouts, we can merge
+                targetBarrier.SrcStageMask |= sourceBarrier.SrcStageMask;
+                targetBarrier.DstStageMask |= sourceBarrier.DstStageMask;
+                targetBarrier.SrcAccess |= sourceBarrier.SrcAccess;
+                targetBarrier.DstAccess |= sourceBarrier.DstAccess;
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        private static bool TryMergeSubresourceRange(ref SyncSubresourceRange range, SyncSubresourceRange source)
+        {
+            var a = range;
+            var b = source;
+
+            // first, test for containment
+            if (a.NumLayers < b.NumLayers)
+            {
+                // push the higher layer-count into a
+                (a, b) = (b, a);
+            }
+
+            if (a.NumMips >= b.NumMips)
+            {
+                // containment is possible, and a will contain b
+                if (a.BaseLayer <= b.BaseLayer && a.BaseMip <= b.BaseMip
+                    && a.BaseLayer + a.NumLayers >= b.BaseLayer + b.NumLayers
+                    && a.BaseMip + a.NumMips >= b.BaseMip + b.NumMips)
+                {
+                    // a strictly-contains b, so a is the result
+                    range = a;
+                    return true;
                 }
 
+                // containment failed, but another test may pass
+            }
+
+            // now, try to merge with overlap on the layer axis
+            if (a.BaseLayer > b.BaseLayer)
+            {
+                // push the low-valued baselayer into a
+                (a, b) = (b, a);
+            }
+
+            if (a.BaseLayer != b.BaseLayer)
+            {
+                if (a.NumLayers == 0)
+                {
+                    // no mips listed, set baselayer to b's baselayer
+                    a = a with { BaseLayer = b.BaseLayer };
+                }
+
+                // if the base layers are different, then for a valid merge, they MUST have the same number and position of mip levels
+                if (a.BaseMip != b.BaseMip || a.NumMips != b.NumMips)
+                {
+                    return false;
+                }
+
+                // if b's base layer is not within (or touching) a's range, they cannot merge
+                if (b.BaseLayer > a.BaseLayer + a.NumLayers)
+                {
+                    return false;
+                }
+
+                // otherwise, we can merge them
+                range = a with
+                {
+                    // only the number of layers will change here
+                    NumLayers = b.BaseLayer + b.NumLayers - a.BaseLayer
+                };
                 return true;
             }
 
+            // finally, try to merge with overlap on the mip axis
+            if (a.BaseMip > b.BaseMip)
+            {
+                // push the low-valued basemip into a
+                (a, b) = (b, a);
+            }
+
+            if (a.BaseMip != b.BaseMip)
+            {
+                if (a.NumMips == 0)
+                {
+                    // no mips listed, set basemip to b's basemip
+                    a = a with { BaseMip = b.BaseMip };
+                }
+
+                // if the base mips are different, then for a valid merge, they MUST have the same number and position of layers
+                if (a.BaseLayer != b.BaseLayer || a.NumLayers != b.NumLayers)
+                {
+                    return false;
+                }
+
+                // if b's base mips is not within (or touching) a's range, they cannot merge
+                if (b.BaseMip > a.BaseMip + a.NumMips)
+                {
+                    return false;
+                }
+
+                // otherwise, we can merge them
+                range = a with
+                {
+                    // only the number of mips will change here
+                    NumMips = b.BaseMip + b.NumMips - a.BaseMip
+                };
+                return true;
+            }
+
+            // no tests passed, cannot merge
             return false;
+        }
+
+        private void EnqueueBarrier(ISynchronizedResource resource, SyncSubresourceRange subresources, in ResourceBarrierInfo barrier, bool resourceIsImage)
+        {
+            if (barrier == default)
+            {
+                // an empty barrier is meaningless
+                return;
+            }
+
+            if (subresources is not { NumLayers: not 0, NumMips: not 0 })
+            {
+                // an empty subresource range is meaningless
+                return;
+            }
+
+            _pendingBarriers.Add(new(resource, subresources, barrier));
+
+            if (resourceIsImage)
+            {
+                _pendingImageBarriers++;
+            }
+            else
+            {
+                _pendingBufferBarriers++;
+            }
         }
 
         private void EmitInitialResourceSync(VkCommandBuffer cb)
@@ -673,9 +900,14 @@ namespace Veldrid.Vulkan2
 
             // we're just going to reuse the existing buffers we have, because it's all we actually need
             // note: we're also under a global lock here, so it's safe to mutate the global information
-            foreach (var (res, info) in _resourceSyncInfo)
+            foreach (var ((res, sub), info) in _resourceSyncInfo)
             {
-                _ = SyncResourceToState(ref res.SyncState, res, info.Expected);
+                ref var state = ref res.SyncStateForSubresource(sub);
+                if (TryBuildSyncBarrier(ref state, info.Expected, out var barrier))
+                {
+                    // TODO: try to merge these barriers????
+                    EnqueueBarrier(res, new(sub.Layer, sub.Mip, 1, 1), barrier, info.IsImage);
+                }
             }
 
             // then emit the synchronization to the target command buffer
@@ -688,9 +920,18 @@ namespace Veldrid.Vulkan2
         }
 
         private void EmitQueuedSynchro(VkCommandBuffer cb,
-            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            List<PendingBarrier> pendingBarriers,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
+            if (pendingBarriers.Count == 0)
+            {
+                Debug.Assert(pendingImageBarriers == 0);
+                Debug.Assert(pendingBufferBarriers == 0);
+                return;
+            }
+
+            Debug.Assert(pendingBarriers.Count == pendingImageBarriers + pendingBufferBarriers);
+
             if (Device._deviceCreateState.HasSync2Ext)
             {
                 EmitQueuedSynchroSync2(Device, cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
@@ -716,14 +957,14 @@ namespace Veldrid.Vulkan2
         }
 
         private static void EmitQueuedSynchroSync2(VulkanGraphicsDevice device, VkCommandBuffer cb,
-            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            List<PendingBarrier> pendingBarriers,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
             var imgBarriers = ArrayPool<VkImageMemoryBarrier2>.Shared.Rent(pendingImageBarriers);
             var bufBarriers = ArrayPool<VkBufferMemoryBarrier2>.Shared.Rent(pendingBufferBarriers);
             var imgIdx = 0;
             var bufIdx = 0;
-            foreach (var (resource, barrier) in pendingBarriers)
+            foreach (var (resource, subresource, barrier) in pendingBarriers)
             {
                 switch (resource)
                 {
@@ -744,10 +985,10 @@ namespace Veldrid.Vulkan2
                             image = vkTex.DeviceImage,
                             subresourceRange = new()
                             {
-                                baseArrayLayer = 0,
-                                baseMipLevel = 0,
-                                layerCount = vkTex.ActualArrayLayers,
-                                levelCount = vkTex.MipLevels,
+                                baseArrayLayer = subresource.BaseLayer,
+                                baseMipLevel = subresource.BaseMip,
+                                layerCount = subresource.NumLayers,
+                                levelCount = subresource.NumMips,
                                 aspectMask = GetAspectForTexture(vkTex)
                             }
                         };
@@ -808,7 +1049,7 @@ namespace Veldrid.Vulkan2
         }
 
         private void EmitQueuedSynchroVk11(VkCommandBuffer cb,
-            List<(ISynchronizedResource resource, ResourceBarrierInfo barrier)> pendingBarriers,
+            List<PendingBarrier> pendingBarriers,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
             var imgBarriers = ArrayPool<VkImageMemoryBarrier>.Shared.Rent(pendingImageBarriers);
@@ -820,7 +1061,7 @@ namespace Veldrid.Vulkan2
             VkPipelineStageFlags srcStageMask = 0;
             VkPipelineStageFlags dstStageMask = 0;
 
-            foreach (var (resource, barrier) in pendingBarriers)
+            foreach (var (resource, subresource, barrier) in pendingBarriers)
             {
                 switch (resource)
                 {
@@ -841,10 +1082,10 @@ namespace Veldrid.Vulkan2
                             image = vkTex.DeviceImage,
                             subresourceRange = new()
                             {
-                                baseArrayLayer = 0,
-                                baseMipLevel = 0,
-                                layerCount = vkTex.ActualArrayLayers,
-                                levelCount = vkTex.MipLevels,
+                                baseArrayLayer = subresource.BaseLayer,
+                                baseMipLevel = subresource.BaseMip,
+                                layerCount = subresource.NumLayers,
+                                levelCount = subresource.NumMips,
                                 aspectMask = GetAspectForTexture(vkTex)
                             }
                         };
@@ -863,6 +1104,7 @@ namespace Veldrid.Vulkan2
                             ref var vkBarrier = ref bufBarriers[bufIdx++];
                             srcStageMask |= barrier.SrcStageMask;
                             dstStageMask |= barrier.DstStageMask;
+                            Debug.Assert(subresource == default);
                             vkBarrier = new()
                             {
                                 sType = VkStructureType.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -1033,12 +1275,12 @@ namespace Veldrid.Vulkan2
             var region = new VkImageResolve()
             {
                 extent = new VkExtent3D() { width = source.Width, height = source.Height, depth = source.Depth },
-                srcSubresource = new VkImageSubresourceLayers() { layerCount = 1, aspectMask = aspectFlags },
+                srcSubresource = new VkImageSubresourceLayers() { layerCount = 1, aspectMask = aspectFlags }, // note: only resolves layer 0 mip 0
                 dstSubresource = new VkImageSubresourceLayers() { layerCount = 1, aspectMask = aspectFlags }
             };
 
             // generate synchro for the source and destination
-            SyncResource(srcTex, new()
+            SyncResource(srcTex, new(0, 0, 1, 1), new()
             {
                 Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 BarrierMasks = new()
@@ -1047,7 +1289,7 @@ namespace Veldrid.Vulkan2
                     AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
                 }
             });
-            SyncResource(srcTex, new()
+            SyncResource(srcTex, new(0, 0, 1, 1), new()
             {
                 Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 BarrierMasks = new()
@@ -1174,7 +1416,7 @@ namespace Veldrid.Vulkan2
             var dstIsStaging = (dstTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
 
             // before doing anything, make sure we're sync'd
-            SyncResource(srcTex, new()
+            SyncResource(srcTex, new(srcBaseArrayLayer, srcMipLevel, layerCount, 1), new()
             {
                 Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 BarrierMasks = new()
@@ -1183,7 +1425,7 @@ namespace Veldrid.Vulkan2
                     AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
                 },
             });
-            SyncResource(dstTex, new()
+            SyncResource(dstTex, new(dstBaseArrayLayer, dstMipLevel, layerCount, 1), new()
             {
                 Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 BarrierMasks = new()

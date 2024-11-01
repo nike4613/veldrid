@@ -34,9 +34,10 @@ namespace Veldrid.Vulkan2
         public SyncRequest Expected;
         public SyncState LocalState;
         public bool HasBarrier;
+        public bool IsImage;
     }
 
-    internal struct ResourceBarrierInfo
+    internal record struct ResourceBarrierInfo
     {
         public VkAccessFlags SrcAccess;
         public VkAccessFlags DstAccess;
@@ -45,4 +46,7 @@ namespace Veldrid.Vulkan2
         public VkImageLayout SrcLayout;
         public VkImageLayout DstLayout;
     }
+
+    internal readonly record struct SyncSubresource(uint Layer, uint Mip);
+    internal readonly record struct SyncSubresourceRange(uint BaseLayer, uint BaseMip, uint NumLayers, uint NumMips);
 }

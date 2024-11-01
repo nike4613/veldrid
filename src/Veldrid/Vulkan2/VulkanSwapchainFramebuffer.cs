@@ -113,7 +113,8 @@ namespace Veldrid.Vulkan2
                         uint.Max(1, _extent.width), uint.Max(1, _extent.height), mipLevels: 1, arrayLayers: 1,
                         VkFormats.VkToVdPixelFormat(_imageFormat), TextureUsage.RenderTarget),
                     _images[i], default, default, isSwapchainTexture: true, leaveOpen: true);
-                tex.SyncState.CurrentImageLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED;
+                // textures start out in the undefined format, which corresponds to the default value of the layout field.
+                tex.AllSyncStates.Fill(default);
 
                 var desc = new FramebufferDescription(_depthTarget?.Target, tex);
                 _framebuffers[i] = _gd.ResourceFactory.CreateFramebuffer(desc);

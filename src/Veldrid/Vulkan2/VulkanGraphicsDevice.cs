@@ -558,8 +558,7 @@ namespace Veldrid.Vulkan2
                     if (buffer.SizeInBytes >= size)
                     {
                         _availableStagingBuffers.RemoveAt(i);
-                        // reset sync state so we treat this as fresh
-                        buffer.SyncState = default;
+                        // note: don't reset sync state, as it is REQUIRED that we sync against it for writes
                         return buffer;
                     }
                 }
@@ -595,8 +594,7 @@ namespace Veldrid.Vulkan2
                     {
                         _availableStagingTextures.RemoveAt(i);
                         tex.SetStagingDimensions(width, height, depth, format);
-                        // reset sync state so we treat this tex as fresh
-                        tex.SyncState = default;
+                        // note: we CANNOT reset sync state, because writes must be correctly sync'd against readers
                         return tex;
                     }
                 }
@@ -792,7 +790,7 @@ namespace Veldrid.Vulkan2
                 lock (QueueLock)
                 {
                     // the buffer WAS written to though, make sure we note that
-                    copySrcBuffer.SyncState = new()
+                    copySrcBuffer.AllSyncStates.Fill(new()
                     {
                         LastWriter = new()
                         {
@@ -800,7 +798,7 @@ namespace Veldrid.Vulkan2
                             StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                         },
                         PerStageReaders = 0,
-                    };
+                    });
                 }
 
                 var cl = GetAndBeginCommandList();
@@ -825,7 +823,7 @@ namespace Veldrid.Vulkan2
                 // QueueLock is how we sync global sync state
                 lock (QueueLock)
                 {
-                    vkBuffer.SyncState = new()
+                    vkBuffer.AllSyncStates.Fill(new()
                     {
                         LastWriter = new()
                         {
@@ -833,7 +831,7 @@ namespace Veldrid.Vulkan2
                             StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
                         },
                         PerStageReaders = 0,
-                    };
+                    });
                 }
             }
         }
@@ -893,7 +891,7 @@ namespace Veldrid.Vulkan2
             // QueueLock synchronizes access to global sync state
             lock (QueueLock)
             {
-                tex.SyncState = new()
+                tex.AllSyncStates.Fill(new()
                 {
                     LastWriter = new()
                     {
@@ -902,7 +900,7 @@ namespace Veldrid.Vulkan2
                     },
                     PerStageReaders = 0,
                     // note: staging textures don't track layout
-                };
+                });
             }
         }
 
@@ -915,6 +913,7 @@ namespace Veldrid.Vulkan2
             void* mappedPtr = null;
             var rowPitch = 0u;
             var depthPitch = 0u;
+            var syncSubresource = new SyncSubresourceRange(0, 0, 1, 1);
 
             if (resource is VulkanBuffer buffer)
             {
@@ -926,6 +925,7 @@ namespace Veldrid.Vulkan2
                 var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
                 syncResource = tex;
                 Util.GetMipLevelAndArrayLayer(tex, subresource, out var mipLevel, out var arrayLayer);
+                syncSubresource = new(arrayLayer, mipLevel, 1, 1);
 
                 var layout = tex.GetSubresourceLayout(mipLevel, arrayLayer);
                 memoryBlock = tex.Memory;
@@ -960,6 +960,7 @@ namespace Veldrid.Vulkan2
                             var bindOffset = mapOffset / atomSize * atomSize;
                             var bindSize = (sizeInBytes + atomSize - 1) / atomSize * atomSize;
 
+                            // TODO: I'm pretty sure this is STILL wrong if mapping multiple subresources independently
                             var result = vkMapMemory(Device, memoryBlock.DeviceMemory, bindOffset, bindSize, 0, &mappedPtr);
                             if (result is not VkResult.VK_ERROR_MEMORY_MAP_FAILED)
                             {
@@ -984,7 +985,7 @@ namespace Veldrid.Vulkan2
                 {
                     // a read mode was requested, we need to sync-to-host to make sure the memory is visible
                     var cl = GetAndBeginCommandList();
-                    cl.SyncResource(syncResource, new()
+                    cl.SyncResourceDyn(syncResource, syncSubresource, new()
                     {
                         BarrierMasks = new()
                         {
@@ -992,7 +993,7 @@ namespace Veldrid.Vulkan2
                             AccessMask = VkAccessFlags.VK_ACCESS_HOST_READ_BIT,
                         },
                         // note: host reads must be done in PREINITIALIZED or GENERAL.
-                        // Because we don't have a good wat to know which we're in here, we always transition
+                        // Because we don't have a good way to know which we're in here, we always transition
                         // to GENERAL for a map operation.
                         Layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
                     });
@@ -1007,8 +1008,8 @@ namespace Veldrid.Vulkan2
                 {
                     sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                     memory = memoryBlock.DeviceMemory,
-                    offset = 0,
-                    size = VK_WHOLE_SIZE,
+                    offset = memoryBlock.Offset,
+                    size = memoryBlock.Size,
                 };
 
                 VulkanUtil.CheckResult(vkInvalidateMappedMemoryRanges(Device, 1, &mappedRange));
@@ -1066,13 +1067,14 @@ namespace Veldrid.Vulkan2
             if (resource is VulkanBuffer buffer)
             {
                 memoryBlock = buffer.Memory;
-                syncState = ref buffer.SyncState;
+                syncState = ref buffer.AllSyncStates[0];
             }
             else
             {
                 var tex = Util.AssertSubtype<MappableResource, VulkanTexture>(resource);
                 memoryBlock = tex.Memory;
-                syncState = ref tex.SyncState;
+                Util.GetMipLevelAndArrayLayer(tex, subresource, out var mipLevel, out var arrayLayer);
+                syncState = ref tex.SyncStateForSubresource(new(arrayLayer, mipLevel));
             }
 
             lock (_mappedResourcesLock)
@@ -1129,7 +1131,7 @@ namespace Veldrid.Vulkan2
             foreach (ref var colorTarget in vkSwapchain.Framebuffer.CurrentFramebuffer.ColorTargetsArray.AsSpan())
             {
                 var tex = Util.AssertSubtype<Texture, VulkanTexture>(colorTarget.Target);
-                cl.SyncResource(tex, new()
+                cl.SyncResource(tex, new(colorTarget.ArrayLayer, colorTarget.MipLevel, 1, 1), new()
                 {
                     Layout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                     BarrierMasks = new()
