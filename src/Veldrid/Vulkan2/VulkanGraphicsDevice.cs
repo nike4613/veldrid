@@ -19,6 +19,7 @@ using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using Vortice.Direct3D11;
 
 namespace Veldrid.Vulkan2
 {
@@ -29,6 +30,7 @@ namespace Veldrid.Vulkan2
 
         private readonly VkDeviceMemoryManager _memoryManager;
         private readonly VulkanDescriptorPoolManager _descriptorPoolManager;
+        private readonly ConcurrentDictionary<VkFormat, VkFilter> _filters = new();
         internal readonly object QueueLock = new();
 
         public VkDeviceMemoryManager MemoryManager => _memoryManager;
@@ -723,6 +725,21 @@ namespace Veldrid.Vulkan2
                 return TextureSampleCount.Count2;
             }
             return TextureSampleCount.Count1;
+        }
+
+        internal unsafe VkFilter GetFormatFilter(VkFormat format)
+        {
+            if (!_filters.TryGetValue(format, out VkFilter filter))
+            {
+                VkFormatProperties vkFormatProps;
+                vkGetPhysicalDeviceFormatProperties(_deviceCreateState.PhysicalDevice, format, &vkFormatProps);
+                filter = (vkFormatProps.optimalTilingFeatures & VkFormatFeatureFlags.VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0
+                    ? VkFilter.VK_FILTER_LINEAR
+                    : VkFilter.VK_FILTER_NEAREST;
+                _filters.TryAdd(format, filter);
+            }
+
+            return filter;
         }
 
         private protected unsafe override bool GetPixelFormatSupportCore(PixelFormat format, TextureType type, TextureUsage usage, out PixelFormatProperties properties)

@@ -1648,6 +1648,87 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        private protected override void GenerateMipmapsCore(Texture texture)
+        {
+            var tex = Util.AssertSubtype<Texture, VulkanTexture>(texture);
+            _currentStagingInfo.AddResource(tex);
+
+            EnsureNoRenderPass();
+
+            var image = tex.DeviceImage;
+            var layerCount = tex.ActualArrayLayers;
+
+            var width = tex.Width;
+            var height = tex.Height;
+            var depth = tex.Depth;
+
+            // iterate over all mip levels to generate
+            for (var level = 1u; level < tex.MipLevels; level++)
+            {
+                var srcSubresources = new SyncSubresourceRange(0, level - 1, layerCount, 1);
+                var dstSubresources = new SyncSubresourceRange(0, level, layerCount, 1);
+
+                // synchronize appropriately
+                SyncResource(tex, srcSubresources, new()
+                {
+                    Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    BarrierMasks = new()
+                    {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
+                    }
+                });
+                SyncResource(tex, dstSubresources, new()
+                {
+                    Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    BarrierMasks = new()
+                    {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_WRITE_BIT,
+                    }
+                });
+                EmitQueuedSynchro();
+
+                // set up the blit command
+                var mipWidth = uint.Max(width >> 1, 1);
+                var mipHeight = uint.Max(height >> 1, 1);
+                var mipDepth = uint.Max(depth >> 1, 1);
+
+                var region = new VkImageBlit()
+                {
+                    srcSubresource = new()
+                    {
+                        aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                        baseArrayLayer = 0,
+                        layerCount = layerCount,
+                        mipLevel = level - 1,
+                    },
+                    dstSubresource = new()
+                    {
+                        aspectMask = VkImageAspectFlags.VK_IMAGE_ASPECT_COLOR_BIT,
+                        baseArrayLayer = 0,
+                        layerCount = layerCount,
+                        mipLevel = level,
+                    },
+                };
+
+                region.srcOffsets[0] = default;
+                region.srcOffsets[1] = new() { x = (int)width, y = (int)height, z = (int)depth };
+                region.dstOffsets[0] = default;
+                region.dstOffsets[1] = new() { x = (int)mipWidth, y = (int)mipHeight, z = (int)mipDepth };
+
+                vkCmdBlitImage(_currentCb,
+                    image, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    image, VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &region,
+                    Device.GetFormatFilter(tex.VkFormat));
+
+                width = mipWidth;
+                height = mipHeight;
+                depth = mipDepth;
+            }
+        }
+
         private protected override void PushDebugGroupCore(ReadOnlySpan<char> name)
         {
             var vkCmdDebugMarkerBeginEXT = Device.vkCmdDebugMarkerBeginEXT;
@@ -1689,23 +1770,6 @@ namespace Veldrid.Vulkan2
                 };
                 vkCmdDebugMarkerInsertEXT(_currentCb, &markerInfo);
             }
-        }
-
-
-        private void EnsureRenderPass()
-        {
-            throw new NotImplementedException();
-        }
-
-        private bool EnsureNoRenderPass()
-        {
-            if (!_framebufferRenderPassInstanceActive)
-            {
-                // no render pass is actually active, nothing to do
-                return false;
-            }
-
-            throw new NotImplementedException();
         }
 
         private protected override void ClearColorTargetCore(uint index, RgbaFloat clearColor)
@@ -1998,6 +2062,22 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        private void EnsureRenderPass()
+        {
+            throw new NotImplementedException();
+        }
+
+        private bool EnsureNoRenderPass()
+        {
+            if (!_framebufferRenderPassInstanceActive)
+            {
+                // no render pass is actually active, nothing to do
+                return false;
+            }
+
+            throw new NotImplementedException();
+        }
+
         private protected override void DrawCore(uint vertexCount, uint instanceCount, uint vertexStart, uint instanceStart)
         {
             throw new NotImplementedException();
@@ -2024,11 +2104,6 @@ namespace Veldrid.Vulkan2
         }
 
         protected override void DispatchIndirectCore(DeviceBuffer indirectBuffer, uint offset)
-        {
-            throw new NotImplementedException();
-        }
-
-        private protected override void GenerateMipmapsCore(Texture texture)
         {
             throw new NotImplementedException();
         }
