@@ -768,101 +768,84 @@ namespace Veldrid.Vulkan2
             var a = range;
             var b = source;
 
-            // first, test for containment
-            if (a.NumLayers < b.NumLayers)
+            if (a.NumLayers == 0)
             {
-                // push the higher layer-count into a
-                (a, b) = (b, a);
+                a = a with { BaseLayer = b.BaseLayer };
+            }
+            if (a.NumMips == 0)
+            {
+                a = a with { BaseMip = b.BaseMip };
+            }
+            if (b.NumLayers == 0)
+            {
+                b = b with { BaseLayer = a.BaseLayer };
+            }
+            if (b.NumMips == 0)
+            {
+                b = b with { BaseMip = a.BaseMip };
             }
 
-            if (a.NumMips >= b.NumMips)
+            // if one dimension matches exactly, extend the other dimension (if overlapping)
+            if (a.BaseLayer == b.BaseLayer && a.NumLayers == b.NumLayers)
             {
-                // containment is possible, and a will contain b
-                if (a.BaseLayer <= b.BaseLayer && a.BaseMip <= b.BaseMip
-                    && a.BaseLayer + a.NumLayers >= b.BaseLayer + b.NumLayers
-                    && a.BaseMip + a.NumMips >= b.BaseMip + b.NumMips)
+                // expand on mip axis
+                var ab = a.BaseMip;
+                var bb = b.BaseMip;
+                var ah = ab + a.NumMips;
+                var bh = bb + b.NumMips;
+
+                if (bh < ab || ah < bb)
                 {
-                    // a strictly-contains b, so a is the result
-                    range = a;
-                    return true;
-                }
-
-                // containment failed, but another test may pass
-            }
-
-            // now, try to merge with overlap on the layer axis
-            if (a.BaseLayer > b.BaseLayer)
-            {
-                // push the low-valued baselayer into a
-                (a, b) = (b, a);
-            }
-
-            if (a.BaseLayer != b.BaseLayer)
-            {
-                if (a.NumLayers == 0)
-                {
-                    // no mips listed, set baselayer to b's baselayer
-                    a = a with { BaseLayer = b.BaseLayer };
-                }
-
-                // if the base layers are different, then for a valid merge, they MUST have the same number and position of mip levels
-                if (a.BaseMip != b.BaseMip || a.NumMips != b.NumMips)
-                {
+                    // cannot perform the merge; non-overlapping regions
                     return false;
                 }
 
-                // if b's base layer is not within (or touching) a's range, they cannot merge
-                if (b.BaseLayer > a.BaseLayer + a.NumLayers)
-                {
-                    return false;
-                }
-
-                // otherwise, we can merge them
-                range = a with
-                {
-                    // only the number of layers will change here
-                    NumLayers = b.BaseLayer + b.NumLayers - a.BaseLayer
-                };
+                // can perform the merge, overlapping regions
+                var lo = uint.Min(ab, bb);
+                var hi = uint.Max(ah, bh);
+                range = a with { BaseMip = lo, NumMips = hi - lo };
                 return true;
             }
 
-            // finally, try to merge with overlap on the mip axis
-            if (a.BaseMip > b.BaseMip)
+            if (a.BaseMip == b.BaseMip && a.NumMips == b.NumMips)
             {
-                // push the low-valued basemip into a
-                (a, b) = (b, a);
-            }
+                // expand on mip axis
+                var ab = a.BaseLayer;
+                var bb = b.BaseLayer;
+                var ah = ab + a.NumLayers;
+                var bh = bb + b.NumLayers;
 
-            if (a.BaseMip != b.BaseMip)
-            {
-                if (a.NumMips == 0)
+                if (bh < ab || ah < bb)
                 {
-                    // no mips listed, set basemip to b's basemip
-                    a = a with { BaseMip = b.BaseMip };
-                }
-
-                // if the base mips are different, then for a valid merge, they MUST have the same number and position of layers
-                if (a.BaseLayer != b.BaseLayer || a.NumLayers != b.NumLayers)
-                {
+                    // cannot perform the merge; non-overlapping regions
                     return false;
                 }
 
-                // if b's base mips is not within (or touching) a's range, they cannot merge
-                if (b.BaseMip > a.BaseMip + a.NumMips)
-                {
-                    return false;
-                }
-
-                // otherwise, we can merge them
-                range = a with
-                {
-                    // only the number of mips will change here
-                    NumMips = b.BaseMip + b.NumMips - a.BaseMip
-                };
+                // can perform the merge, overlapping regions
+                var lo = uint.Min(ab, bb);
+                var hi = uint.Max(ah, bh);
+                range = a with { BaseLayer = lo, NumLayers = hi - lo };
                 return true;
             }
 
-            // no tests passed, cannot merge
+            if (a.BaseLayer <= b.BaseLayer && a.BaseMip <= b.BaseMip
+                && a.BaseLayer + a.NumLayers >= b.BaseLayer + b.NumLayers
+                && a.BaseMip + a.NumMips >= b.BaseMip + b.NumMips)
+            {
+                // a strictly-contains b, so a is the result
+                range = a;
+                return true;
+            }
+
+            if (b.BaseLayer <= a.BaseLayer && b.BaseMip <= a.BaseMip
+                && b.BaseLayer + b.NumLayers >= a.BaseLayer + b.NumLayers
+                && b.BaseMip + b.NumMips >= a.BaseMip + a.NumMips)
+            {
+                // b strictly-contains a, so b is the result
+                range = b;
+                return true;
+            }
+
             return false;
         }
 
