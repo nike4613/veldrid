@@ -891,6 +891,21 @@ namespace Veldrid.Vulkan2
                     // TODO: try to merge these barriers????
                     EnqueueBarrier(res, new(sub.Layer, sub.Mip, 1, 1), barrier, info.IsImage);
                 }
+
+                // The resulting synchronization is not complete; it is only up to the *start* of the command buffer.
+                // We need *now* to update the global state according to the local state.
+                if (info.LocalState.LastWriter.AccessMask != 0)
+                {
+                    // there was a write in this commandlist, we need to full-overwrite
+                    state = info.LocalState;
+                }
+                else
+                {
+                    // there was no write, just update the readers lists
+                    state.OngoingReaders.StageMask |= info.LocalState.OngoingReaders.StageMask;
+                    state.OngoingReaders.AccessMask |= info.LocalState.OngoingReaders.AccessMask;
+                    state.PerStageReaders |= info.LocalState.PerStageReaders;
+                }
             }
 
             // then emit the synchronization to the target command buffer
