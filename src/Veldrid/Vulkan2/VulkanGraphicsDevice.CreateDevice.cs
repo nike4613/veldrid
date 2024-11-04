@@ -210,6 +210,8 @@ namespace Veldrid.Vulkan2
                     result.MainComputeFamilyIdx = i;
                 }
 
+                // TODO: how can we identify a valid presentation queue when we're started with no target surface?
+
                 // we only care about present queues which are ALSO main queues
                 if (used && result.PresentFamilyIdx < 0 && optSurface != VkSurfaceKHR.NULL)
                 {

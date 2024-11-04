@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
 using VkVersion = Veldrid.Vulkan.VkVersion;
@@ -45,7 +46,7 @@ namespace Veldrid.Vulkan2
         public VkQueue PresentQueue => _presentQueue;
         public int PresentQueueIndex => _presentQueueIndex;
 
-        internal unsafe VulkanSwapchain(VulkanGraphicsDevice gd, in SwapchainDescription description, ref VkSurfaceKHR surface)
+        internal unsafe VulkanSwapchain(VulkanGraphicsDevice gd, in SwapchainDescription description, ref VkSurfaceKHR surface, int presentQueueIndex)
         {
             _gd = gd;
             _surface = surface;
@@ -54,7 +55,8 @@ namespace Veldrid.Vulkan2
             _syncToVBlank = description.SyncToVerticalBlank;
             _colorSrgb = description.ColorSrgb;
 
-            _presentQueueIndex = gd._deviceCreateState.QueueFamilyInfo.PresentFamilyIdx;
+            Debug.Assert(presentQueueIndex != -1);
+            _presentQueueIndex = presentQueueIndex;
             _presentQueue = gd._deviceCreateState.MainQueue; // right now, we only ever create one queue
 
             RefCount = new(this);
@@ -238,7 +240,7 @@ namespace Veldrid.Vulkan2
             uint* queueFamilyIndices = stackalloc uint[]
             {
                 (uint)_gd._deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx,
-                (uint)_gd._deviceCreateState.QueueFamilyInfo.PresentFamilyIdx,
+                (uint)_presentQueueIndex,
             };
 
             if (queueFamilyIndices[0] != queueFamilyIndices[1])

@@ -216,7 +216,7 @@ namespace Veldrid.Vulkan2
                     Debug.Assert(_deviceCreateState.Surface != VkSurfaceKHR.NULL);
 
                     // note: the main swapchain takes ownership of the created surface
-                    MainSwapchain = new VulkanSwapchain(this, desc, ref Unsafe.AsRef(ref _deviceCreateState.Surface));
+                    MainSwapchain = new VulkanSwapchain(this, desc, ref Unsafe.AsRef(ref _deviceCreateState.Surface), _deviceCreateState.QueueFamilyInfo.PresentFamilyIdx);
                 }
 
                 EagerlyAllocateSomeResources();

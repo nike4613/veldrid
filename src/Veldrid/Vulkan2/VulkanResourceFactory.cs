@@ -639,7 +639,25 @@ namespace Veldrid.Vulkan2
             try
             {
                 surface = VulkanGraphicsDevice.CreateSurface(_gd._deviceCreateState.Instance, _gd._surfaceExtensions, description.Source);
-                return new VulkanSwapchain(_gd, in description, ref surface);
+
+                var presentQueueIndex = _gd._deviceCreateState.QueueFamilyInfo.PresentFamilyIdx;
+                if (presentQueueIndex == -1)
+                {
+                    // no present family was identified during startup, since we only support one queue it should just be the main graphics family
+                    presentQueueIndex = _gd._deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx;
+                }
+
+                // we need to make sure that the queue that we've selected is capable of presenting to the created surface
+                uint supported;
+                VulkanUtil.CheckResult(vkGetPhysicalDeviceSurfaceSupportKHR(
+                    _gd._deviceCreateState.PhysicalDevice, (uint)presentQueueIndex, surface, &supported));
+                if (!(VkBool32)supported)
+                {
+                    // we can't present to the queue, unable to create swapchain
+                    throw new VeldridException("Cannot create swapchain (selected VkQueue cannot present to target surface)");
+                }
+
+                return new VulkanSwapchain(_gd, in description, ref surface, presentQueueIndex);
             }
             finally
             {
