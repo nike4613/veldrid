@@ -257,6 +257,7 @@ namespace Veldrid.Vulkan2
             Debug.Assert(dcs.QueueFamilyInfo.PresentFamilyIdx is -1 || dcs.QueueFamilyInfo.MainGraphicsFamilyIdx == dcs.QueueFamilyInfo.PresentFamilyIdx);
             Debug.Assert(dcs.QueueFamilyInfo.MainComputeFamilyIdx is -1 || dcs.QueueFamilyInfo.MainGraphicsFamilyIdx == dcs.QueueFamilyInfo.MainComputeFamilyIdx);
             // IF ANY OF THE ABOVE CONDITIONS CHANGE, AND WE BEGIN TO CREATE MULTIPLE QUEUES, vkGetDeviceQueue BELOW MUST ALSO CHANGE
+            // THERE ARE OTHER PLACES AROUND THE CODEBASE WHICH MUST ALSO CHANGE, INCLUDING VulkanSwapchain AND THE SYNCHRONIZATION CODE
 
             var queuePriority = 1f;
             var queueCreateInfo = new VkDeviceQueueCreateInfo()

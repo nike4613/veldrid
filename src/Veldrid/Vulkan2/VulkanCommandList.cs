@@ -640,6 +640,9 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        public bool SyncResource(VulkanTextureView resource, in SyncRequest req)
+            => SyncResource(resource.Target, new(resource.BaseArrayLayer, resource.BaseMipLevel, resource.ArrayLayers, resource.MipLevels), in req);
+
         public bool SyncResourceDyn(ISynchronizedResource resource, SyncSubresourceRange subresources, in SyncRequest req)
             => resource switch
             {
@@ -648,9 +651,6 @@ namespace Veldrid.Vulkan2
                 _ => Illegal.Value<ISynchronizedResource, bool>(),
             };
 
-        // TODO: shouldn't take ISynchronizedResource, should be overloaded based on the specific kind so that subresources (and ranges) can make sense
-        // TODO: should be able to specify a subresource range, where we track changes independently, but merge the resulting barrier
-        // returns true if the sync generated a barrier
         private bool SyncResourceCore(ISynchronizedResource resource, SyncSubresourceRange subresources, bool resourceIsImage, in SyncRequest req)
         {
             if (resourceIsImage)

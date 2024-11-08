@@ -98,9 +98,7 @@ namespace Veldrid.Vulkan2
                     : VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
 
                 // TODO: this is wrong, it should actually be syncing based on the imageview bounds
-                cl.SyncResource(depthTarget.Target,
-                    new(depthTarget.BaseArrayLayer, depthTarget.BaseMipLevel, depthTarget.ArrayLayers, depthTarget.MipLevels),
-                    new()
+                cl.SyncResource(depthTarget, new()
                 {
                     Layout = targetLayout,
                     BarrierMasks = new()
@@ -154,8 +152,7 @@ namespace Veldrid.Vulkan2
 
                 var loadOp = setColorClears[i] ? VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_CLEAR : VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
 
-                cl.SyncResource(target.Target,
-                    new(target.BaseArrayLayer, target.BaseMipLevel, target.ArrayLayers, target.MipLevels), new()
+                cl.SyncResource(target, new()
                 {
                     Layout = targetLayout,
                     BarrierMasks = new()
