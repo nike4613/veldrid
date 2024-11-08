@@ -996,7 +996,7 @@ namespace Veldrid.Vulkan2
             {
                 var data = specDescs[i].Data;
                 var size = VkFormats.GetSpecializationConstantSize(specDescs[i].Type);
-                MemoryMarshal.AsBytes(new Span<ulong>(ref data)).CopyTo(specializationData.AsSpan().Slice((int)offset));
+                MemoryMarshal.AsBytes(new Span<ulong>(ref data)).Slice(0, (int)size).CopyTo(specializationData.AsSpan().Slice((int)offset));
                 specializationMapEntries[i] = new()
                 {
                     constantID = specDescs[i].ID,
@@ -1020,6 +1020,12 @@ namespace Veldrid.Vulkan2
                 VkGraphicsPipelineCreateInfo pipelineCreateInfo = new()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                };
+
+                // used only for when we have DynamicRendering
+                VkPipelineRenderingCreateInfo renderingCreateInfo = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                 };
 
                 // Pipeline Layout
@@ -1046,9 +1052,38 @@ namespace Veldrid.Vulkan2
 
                 pipelineCreateInfo.pInputAssemblyState = &inputAssemblyCI;
 
-                // Fake Render Pass (for compat)
-                if (!_gd._deviceCreateState.HasDynamicRendering) // if dynamic rendering is available, we don't actually need a render pass
+                VkFormat[]? colorAttachmentFormats = null;
+
+                if (_gd._deviceCreateState.HasDynamicRendering) // if dynamic rendering is available, we don't actually need a render pass
                 {
+                    // we need to pass in a VkPipelineRenderingCreateInfo
+                    renderingCreateInfo.pNext = pipelineCreateInfo.pNext;
+                    pipelineCreateInfo.pNext = &renderingCreateInfo;
+
+                    var outputDesc = description.Outputs;
+                    if (outputDesc.DepthAttachment is { } depthAtt)
+                    {
+                        renderingCreateInfo.depthAttachmentFormat = VkFormats.VdToVkPixelFormat(depthAtt.Format, TextureUsage.DepthStencil);
+                        renderingCreateInfo.stencilAttachmentFormat = VkFormat.VK_FORMAT_UNDEFINED;
+                        if (FormatHelpers.IsStencilFormat(depthAtt.Format))
+                        {
+                            renderingCreateInfo.stencilAttachmentFormat = renderingCreateInfo.depthAttachmentFormat;
+                        }
+
+                    }
+
+                    var colorAttDescs = outputDesc.ColorAttachments.AsSpan();
+                    colorAttachmentFormats = ArrayPool<VkFormat>.Shared.Rent(colorAttDescs.Length);
+                    for (var i = 0; i < colorAttDescs.Length; i++)
+                    {
+                        colorAttachmentFormats[i] = VkFormats.VdToVkPixelFormat(colorAttDescs[i].Format, default);
+                    }
+
+                    renderingCreateInfo.colorAttachmentCount = 0;
+                }
+                else
+                {
+                    // Fake Render Pass (for compat)
                     // TODO: a lot of this will probably be fuplicated into the non-Dynamic VulkanFramebuffer
                     var outputDesc = description.Outputs;
                     var colorAttDescs = outputDesc.ColorAttachments.AsSpan();
@@ -1302,6 +1337,7 @@ namespace Veldrid.Vulkan2
 
                 var stringHolder = new List<FixedUtf8String>();
 
+                fixed (VkFormat* pColorAttachmentFormats = colorAttachmentFormats)
                 fixed (VkPipelineColorBlendAttachmentState* pBlendAttachments = blendAttachments)
                 fixed (VkVertexInputBindingDescription* pBindingDescs = bindingDescs)
                 fixed (VkVertexInputAttributeDescription* pAttribDescs = attribDescs)
@@ -1309,6 +1345,8 @@ namespace Veldrid.Vulkan2
                 fixed (VkSpecializationMapEntry* pSpecializationMapEntries = specializationMapEntries)
                 fixed (VkPipelineShaderStageCreateInfo* pShaderStages = shaderStages)
                 {
+                    renderingCreateInfo.pColorAttachmentFormats = pColorAttachmentFormats;
+
                     // actually initialize the blend state CI
                     var blendStateCreateInfo = new VkPipelineColorBlendStateCreateInfo()
                     {

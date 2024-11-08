@@ -33,7 +33,6 @@ namespace Veldrid.Vulkan2
 
 
         public VkExtent2D RenderableExtent => new() { width = Width, height = Height };
-        public abstract HashSet<ISynchronizedResource> SynchroResources { get; }
 
         public abstract void StartRenderPass(VulkanCommandList cl, VkCommandBuffer cb, bool firstBinding,
             VkClearValue? depthClear, ReadOnlySpan<VkClearValue> colorTargetClear, ReadOnlySpan<bool> setColorClears);

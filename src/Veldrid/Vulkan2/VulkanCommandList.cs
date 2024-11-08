@@ -2019,6 +2019,10 @@ namespace Veldrid.Vulkan2
         {
             var vkBuffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(buffer);
 
+            Util.EnsureArrayMinimumSize(ref _vertexBindings, index + 1);
+            Util.EnsureArrayMinimumSize(ref _vertexBuffers, index + 1);
+            Util.EnsureArrayMinimumSize(ref _vertexOffsets, index + 1);
+
             var bufferChanged = _vertexBindings[index] != vkBuffer.DeviceBuffer;
             if (bufferChanged || _vertexOffsets[index] != offset)
             {
@@ -2092,6 +2096,7 @@ namespace Veldrid.Vulkan2
                 // we have a render pass to end, end that
                 Debug.Assert(_currentFramebufferEverActive);
                 _currentFramebuffer!.EndRenderPass(this, _currentCb);
+                _framebufferRenderPassInstanceActive = false;
                 return true;
             }
 
@@ -2099,7 +2104,9 @@ namespace Veldrid.Vulkan2
             {
                 // we do this to flush color clears
                 EnsureRenderPass();
+                _framebufferRenderPassInstanceActive = true;
                 _currentFramebuffer.EndRenderPass(this, _currentCb);
+                _framebufferRenderPassInstanceActive = false;
                 return true;
             }
 

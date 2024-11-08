@@ -31,8 +31,6 @@ namespace Veldrid.Vulkan2
         // we don't actually have a backing object for the name
         public override string? Name { get; set; }
 
-        public override HashSet<ISynchronizedResource> SynchroResources { get; }
-
         public override ResourceRefCount RefCount { get; }
 
         internal unsafe VulkanDynamicFramebuffer(VulkanGraphicsDevice gd, in FramebufferDescription description,
@@ -42,16 +40,6 @@ namespace Veldrid.Vulkan2
             _gd = gd;
             _depthTargetView = depthTargetView;
             _colorTargetViews = colorTextureViews;
-
-            SynchroResources = new();
-            if (depthTargetView is not null)
-            {
-                _ = SynchroResources.Add(depthTargetView.Target);
-            }
-            foreach (var view in colorTextureViews)
-            {
-                _ = SynchroResources.Add(view.Target);
-            }
 
             Debug.Assert(gd._deviceCreateState.HasDynamicRendering);
             Debug.Assert(gd.vkCmdBeginRendering is not null);
@@ -105,9 +93,10 @@ namespace Veldrid.Vulkan2
                         AccessMask = (loadOp == VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD
                             ? VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
                             : 0) | VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                        StageMask = 
+                        VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
                         | VkPipelineStageFlags.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                        | VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, // TODO: what stage mask should this be?
+                        | VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                     }
                 });
 
@@ -156,10 +145,10 @@ namespace Veldrid.Vulkan2
                     Layout = targetLayout,
                     BarrierMasks = new()
                     {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                         AccessMask = (loadOp == VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD
                             ? VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
                             : 0) | VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, // TODO: what stage mask should this be?
                     }
                 });
 
