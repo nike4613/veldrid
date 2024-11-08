@@ -24,6 +24,7 @@ namespace Veldrid.Vulkan2
         private readonly VkDescriptorSetLayout _dsl;
         private readonly VkDescriptorType[] _descriptorTypes;
         private readonly VkShaderStageFlags[] _shaderStages;
+        private readonly VkAccessFlags[] _accessFlags;
         private string? _name;
 
         public ResourceRefCount RefCount { get; }
@@ -32,11 +33,13 @@ namespace Veldrid.Vulkan2
         public VkDescriptorSetLayout DescriptorSetLayout => _dsl;
         public VkDescriptorType[] DescriptorTypes => _descriptorTypes;
         public VkShaderStageFlags[] ShaderStages => _shaderStages;
+        public VkAccessFlags[] AccessFlags => _accessFlags;
         public DescriptorResourceCounts ResourceCounts { get; }
         public new int DynamicBufferCount { get; }
 
         internal VulkanResourceLayout(VulkanGraphicsDevice gd, in ResourceLayoutDescription description,
-            VkDescriptorSetLayout dsl, VkDescriptorType[] descriptorTypes, VkShaderStageFlags[] shaderStages,
+            VkDescriptorSetLayout dsl,
+            VkDescriptorType[] descriptorTypes, VkShaderStageFlags[] shaderStages, VkAccessFlags[] access,
             in DescriptorResourceCounts resourceCounts, int dynamicBufferCount)
             : base(description)
         {
@@ -44,6 +47,7 @@ namespace Veldrid.Vulkan2
             _dsl = dsl;
             _descriptorTypes = descriptorTypes;
             _shaderStages = shaderStages;
+            _accessFlags = access;
             ResourceCounts = resourceCounts;
             DynamicBufferCount = dynamicBufferCount;
 

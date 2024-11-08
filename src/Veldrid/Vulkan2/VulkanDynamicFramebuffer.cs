@@ -97,7 +97,6 @@ namespace Veldrid.Vulkan2
                     ? VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE
                     : VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_LOAD;
 
-                // TODO: this is wrong, it should actually be syncing based on the imageview bounds
                 cl.SyncResource(depthTarget, new()
                 {
                     Layout = targetLayout,

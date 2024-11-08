@@ -708,6 +708,7 @@ namespace Veldrid.Vulkan2
                 var elements = description.Elements;
                 var types = new VkDescriptorType[elements.Length];
                 var stages = new VkShaderStageFlags[elements.Length];
+                var access = new VkAccessFlags[elements.Length];
                 var bindings = ArrayPool<VkDescriptorSetLayoutBinding>.Shared.Rent(elements.Length);
 
                 var dynamicBufferCount = 0;
@@ -733,6 +734,7 @@ namespace Veldrid.Vulkan2
 
                     types[i] = descriptorType;
                     stages[i] = shaderStages;
+                    access[i] = VkFormats.VdToVkAccess(element.Kind);
 
                     if ((element.Options & ResourceLayoutElementOptions.DynamicBinding) != 0)
                     {
@@ -785,7 +787,7 @@ namespace Veldrid.Vulkan2
                     storageBufferCount, storageBufferDynamicCount,
                     storageImageCount);
 
-                var result = new VulkanResourceLayout(_gd, description, dsl, types, stages, resourceCounts, dynamicBufferCount);
+                var result = new VulkanResourceLayout(_gd, description, dsl, types, stages, access, resourceCounts, dynamicBufferCount);
                 dsl = default;
                 return result;
             }
@@ -834,6 +836,9 @@ namespace Veldrid.Vulkan2
                             descriptorCount = 1,
                         };
 
+                        var access = layout.AccessFlags[i];
+                        var pipelineStage = VkFormats.ShaderStagesToPipelineStages(layout.ShaderStages[i]);
+
                         switch (type)
                         {
                             case VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -851,6 +856,14 @@ namespace Veldrid.Vulkan2
                                 };
                                 descWrite.pBufferInfo = pBufferInfos + i;
                                 result.RefCounts.Add(buffer.RefCount);
+                                result.Buffers.Add(new(buffer, new()
+                                {
+                                    BarrierMasks =
+                                    {
+                                        StageMask = pipelineStage,
+                                        AccessMask = access,
+                                    }
+                                }));
                             }
                             break;
 
@@ -865,7 +878,15 @@ namespace Veldrid.Vulkan2
                                 };
                                 descWrite.pImageInfo = pImageInfos + i;
                                 result.RefCounts.Add(texView.RefCount);
-                                result.SampledTextures.Add(texView.Target);
+                                result.Textures.Add(new(texView, new()
+                                {
+                                    Layout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    BarrierMasks =
+                                    {
+                                        StageMask = pipelineStage,
+                                        AccessMask = access,
+                                    }
+                                }));
                             }
                             break;
 
@@ -880,7 +901,15 @@ namespace Veldrid.Vulkan2
                                 };
                                 descWrite.pImageInfo = pImageInfos + i;
                                 result.RefCounts.Add(texView.RefCount);
-                                result.StorageTextures.Add(texView.Target);
+                                result.Textures.Add(new(texView, new()
+                                {
+                                    Layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL,
+                                    BarrierMasks =
+                                    {
+                                        StageMask = pipelineStage,
+                                        AccessMask = access,
+                                    }
+                                }));
                             }
                             break;
 

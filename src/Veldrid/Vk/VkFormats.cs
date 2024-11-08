@@ -156,6 +156,20 @@ namespace Veldrid.Vulkan
             }
         }
 
+        internal static VkAccessFlags VdToVkAccess(ResourceKind kind)
+        {
+            return kind switch
+            {
+                ResourceKind.UniformBuffer => VkAccessFlags.VK_ACCESS_UNIFORM_READ_BIT,
+                ResourceKind.StructuredBufferReadOnly => VkAccessFlags.VK_ACCESS_SHADER_READ_BIT,
+                ResourceKind.StructuredBufferReadWrite => VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_SHADER_WRITE_BIT,
+                ResourceKind.TextureReadOnly => VkAccessFlags.VK_ACCESS_SHADER_READ_BIT,
+                ResourceKind.TextureReadWrite => VkAccessFlags.VK_ACCESS_SHADER_READ_BIT | VkAccessFlags.VK_ACCESS_SHADER_WRITE_BIT,
+                ResourceKind.Sampler => 0,
+                _ => Illegal.Value<ResourceKind, VkAccessFlags>()
+            };
+        }
+
         internal static VkSampleCountFlags VdToVkSampleCount(TextureSampleCount sampleCount)
         {
             return sampleCount switch
@@ -347,6 +361,31 @@ namespace Veldrid.Vulkan
 
             if ((stage & ShaderStages.Compute) == ShaderStages.Compute)
                 ret |= VK_SHADER_STAGE_COMPUTE_BIT;
+
+            return ret;
+        }
+
+        internal static VkPipelineStageFlags ShaderStagesToPipelineStages(VkShaderStageFlags flags)
+        {
+            VkPipelineStageFlags ret = 0;
+
+            if ((flags & VK_SHADER_STAGE_VERTEX_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+
+            if ((flags & VK_SHADER_STAGE_FRAGMENT_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+            if ((flags & VK_SHADER_STAGE_GEOMETRY_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+
+            if ((flags & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
+
+            if ((flags & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+
+            if ((flags & VK_SHADER_STAGE_COMPUTE_BIT) != 0)
+                ret |= VkPipelineStageFlags.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
             return ret;
         }

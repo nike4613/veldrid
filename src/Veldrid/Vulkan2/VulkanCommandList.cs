@@ -14,6 +14,7 @@ using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Veldrid.Vulkan2
 {
@@ -69,6 +70,8 @@ namespace Veldrid.Vulkan2
         private BoundResourceSetInfo[] _currentGraphicsResourceSets = [];
         private bool[] _graphicsResourceSetsChanged = [];
         private VkBuffer[] _vertexBindings = [];
+        private VulkanBuffer[] _vertexBuffers = [];
+        private VulkanBuffer? _indexBuffer;
         private ulong[] _vertexOffsets = [];
         private uint _numVertexBindings = 0;
         private bool _vertexBindingsChanged;
@@ -939,6 +942,8 @@ namespace Veldrid.Vulkan2
                 EmitQueuedSynchroVk11(cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
             }
         }
+
+        private bool HasPendingBarriers => _pendingBarriers.Count > 0;
 
         private static VkImageAspectFlags GetAspectForTexture(VulkanTexture tex)
         {
@@ -1988,6 +1993,7 @@ namespace Veldrid.Vulkan2
 
                 var vertexBufferCount = vkPipeline.VertexLayoutCount;
                 Util.EnsureArrayMinimumSize(ref _vertexBindings, vertexBufferCount);
+                Util.EnsureArrayMinimumSize(ref _vertexBuffers, vertexBufferCount);
                 Util.EnsureArrayMinimumSize(ref _vertexOffsets, vertexBufferCount);
 
                 vkCmdBindPipeline(_currentCb, VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS, vkPipeline.DevicePipeline);
@@ -2020,6 +2026,7 @@ namespace Veldrid.Vulkan2
                 if (bufferChanged)
                 {
                     _currentStagingInfo.AddResource(vkBuffer);
+                    _vertexBuffers[index] = vkBuffer;
                     _vertexBindings[index] = vkBuffer.DeviceBuffer;
                 }
 
@@ -2032,6 +2039,7 @@ namespace Veldrid.Vulkan2
         {
             var vkBuffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(buffer);
             _currentStagingInfo.AddResource(vkBuffer);
+            _indexBuffer = vkBuffer;
 
             vkCmdBindIndexBuffer(_currentCb, vkBuffer.DeviceBuffer, offset, Vulkan.VkFormats.VdToVkIndexFormat(format));
         }
@@ -2062,50 +2070,310 @@ namespace Veldrid.Vulkan2
 
         private void EnsureRenderPass()
         {
-            throw new NotImplementedException();
+            if (_framebufferRenderPassInstanceActive)
+            {
+                // the render pass is already active, nothing to do
+                return;
+            }
+
+            Debug.Assert(_currentFramebuffer is not null);
+            _framebufferRenderPassInstanceActive = true;
+            _currentFramebufferEverActive = true;
+
+            _currentFramebuffer.StartRenderPass(this, _currentCb,
+                firstBinding: !_currentFramebufferEverActive,
+                _depthClearValue, _clearValues, _validClearValues);
         }
 
         private bool EnsureNoRenderPass()
         {
-            if (!_framebufferRenderPassInstanceActive)
+            if (_framebufferRenderPassInstanceActive)
             {
-                // no render pass is actually active, nothing to do
-                return false;
+                // we have a render pass to end, end that
+                Debug.Assert(_currentFramebufferEverActive);
+                _currentFramebuffer!.EndRenderPass(this, _currentCb);
+                return true;
             }
 
-            throw new NotImplementedException();
+            if (!_currentFramebufferEverActive && _currentFramebuffer is not null)
+            {
+                // we do this to flush color clears
+                EnsureRenderPass();
+                _currentFramebuffer.EndRenderPass(this, _currentCb);
+                return true;
+            }
+
+            return false;
+        }
+
+        private void SyncBoundResources(BoundResourceSetInfo[] resourceSets, uint resourceCount)
+        {
+            // sync all bound resources
+            for (int i = 0; i < resourceCount; i++)
+            {
+                BoundResourceSetInfo set = resourceSets[i];
+                var vkSet = Util.AssertSubtype<ResourceSet, VulkanResourceSet>(set.Set);
+
+                foreach (var buf in vkSet.Buffers)
+                {
+                    _ = SyncResource(buf.Resource, buf.Request);
+                }
+
+                foreach (var buf in vkSet.Textures)
+                {
+                    _ = SyncResource(buf.Resource, buf.Request);
+                }
+            }
+        }
+
+        private void SyncIndexAndVertexBuffers()
+        {
+            if (_indexBuffer is { } idxBuf)
+            {
+                _ = SyncResource(idxBuf, new()
+                {
+                    BarrierMasks =
+                    {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_INDEX_READ_BIT,
+                    }
+                });
+            }
+
+            foreach (var buf in _vertexBuffers)
+            {
+                _ = SyncResource(buf, new()
+                {
+                    BarrierMasks =
+                    {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+                    }
+                });
+            }
+        }
+
+        private void PreDrawCommand()
+        {
+            if (_viewportsChanged)
+            {
+                _viewportsChanged = false;
+
+                var count = _viewportCount;
+                if (count > 1 && !Device.Features.MultipleViewports)
+                {
+                    count = 1;
+                }
+
+                fixed (VkViewport* viewports = _viewports)
+                {
+                    vkCmdSetViewport(_currentCb, 0, count, viewports);
+                }
+            }
+
+            if (_scissorRectsChanged)
+            {
+                _scissorRectsChanged = false;
+
+                var count = _viewportCount;
+                if (count > 1 && !Device.Features.MultipleViewports)
+                {
+                    count = 1;
+                }
+
+                fixed (VkRect2D* scissorRects = _scissorRects)
+                {
+                    vkCmdSetScissor(_currentCb, 0, count, scissorRects);
+                }
+            }
+
+            SyncBoundResources(_currentGraphicsResourceSets, _currentGraphicsPipeline!.ResourceSetCount);
+            SyncIndexAndVertexBuffers();
+
+            if (HasPendingBarriers)
+            {
+                // if we now have pending barriers, make sure we're not in a render pass so we can sync
+                EnsureNoRenderPass();
+            }
+
+            if (_vertexBindingsChanged)
+            {
+                _vertexBindingsChanged = false;
+
+                fixed (VkBuffer* vertexBindings = _vertexBindings)
+                fixed (ulong* vertexOffsets = _vertexOffsets)
+                {
+                    vkCmdBindVertexBuffers(
+                        _currentCb,
+                        0, _numVertexBindings,
+                        vertexBindings,
+                        vertexOffsets);
+                }
+            }
+
+            EnsureRenderPass();
+
+            Debug.Assert(!HasPendingBarriers);
+
+            FlushNewResourceSets(
+                _currentGraphicsResourceSets,
+                _graphicsResourceSetsChanged,
+                _currentGraphicsPipeline);
+        }
+
+        private void FlushNewResourceSets(
+            BoundResourceSetInfo[] resourceSets,
+            bool[] resourceSetsChanged,
+            VulkanPipeline pipeline)
+        {
+            int resourceSetCount = (int)pipeline.ResourceSetCount;
+
+            var bindPoint = pipeline.IsComputePipeline
+                ? VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_COMPUTE
+                : VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS;
+
+            // TODO: make sure this is relatively small?
+            var descriptorSets = stackalloc VkDescriptorSet[resourceSetCount];
+            var dynamicOffsets = stackalloc uint[pipeline.DynamicOffsetsCount];
+            var currentBatchCount = 0u;
+            var currentBatchFirstSet = 0u;
+            var currentBatchDynamicOffsetCount = 0u;
+
+            var sets = resourceSets.AsSpan(0, resourceSetCount);
+            var setsChanged = resourceSetsChanged.AsSpan(0, resourceSetCount);
+
+            for (int currentSlot = 0; currentSlot < resourceSetCount; currentSlot++)
+            {
+                bool batchEnded = !setsChanged[currentSlot] || currentSlot == resourceSetCount - 1;
+
+                if (setsChanged[currentSlot])
+                {
+                    setsChanged[currentSlot] = false;
+                    ref var resourceSet = ref sets[currentSlot];
+                    var vkSet = Util.AssertSubtype<ResourceSet, VulkanResourceSet>(resourceSet.Set);
+                    descriptorSets[currentBatchCount] = vkSet.DescriptorSet;
+                    currentBatchCount += 1;
+
+                    ref SmallFixedOrDynamicArray curSetOffsets = ref resourceSet.Offsets;
+                    for (uint i = 0; i < curSetOffsets.Count; i++)
+                    {
+                        dynamicOffsets[currentBatchDynamicOffsetCount] = curSetOffsets.Get(i);
+                        currentBatchDynamicOffsetCount += 1;
+                    }
+
+                    // Increment ref count on first use of a set.
+                    _currentStagingInfo.AddResource(vkSet);
+                    foreach (var rc in vkSet.RefCounts)
+                    {
+                        _currentStagingInfo.AddRefCount(rc);
+                    }
+                }
+
+                if (batchEnded)
+                {
+                    if (currentBatchCount != 0)
+                    {
+                        // Flush current batch.
+                        vkCmdBindDescriptorSets(
+                            _currentCb,
+                            bindPoint,
+                            pipeline.PipelineLayout,
+                            currentBatchFirstSet,
+                            currentBatchCount,
+                            descriptorSets,
+                            currentBatchDynamicOffsetCount,
+                            dynamicOffsets);
+                    }
+
+                    currentBatchCount = 0;
+                    currentBatchFirstSet = (uint)(currentSlot + 1);
+                }
+            }
         }
 
         private protected override void DrawCore(uint vertexCount, uint instanceCount, uint vertexStart, uint instanceStart)
         {
-            throw new NotImplementedException();
+            PreDrawCommand();
+            vkCmdDraw(_currentCb, vertexCount, instanceCount, vertexStart, instanceStart);
         }
 
         private protected override void DrawIndexedCore(uint indexCount, uint instanceCount, uint indexStart, int vertexOffset, uint instanceStart)
         {
-            throw new NotImplementedException();
+            PreDrawCommand();
+            vkCmdDrawIndexed(_currentCb, indexCount, instanceCount, indexStart, vertexOffset, instanceStart);
         }
 
         protected override void DrawIndirectCore(DeviceBuffer indirectBuffer, uint offset, uint drawCount, uint stride)
         {
-            throw new NotImplementedException();
+            var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
+            _currentStagingInfo.AddResource(buffer);
+
+            _ = SyncResource(buffer, new()
+            {
+                BarrierMasks =
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                }
+            });
+
+            PreDrawCommand();
+            vkCmdDrawIndirect(_currentCb, buffer.DeviceBuffer, offset, drawCount, stride);
         }
 
         protected override void DrawIndexedIndirectCore(DeviceBuffer indirectBuffer, uint offset, uint drawCount, uint stride)
         {
-            throw new NotImplementedException();
+            var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
+            _currentStagingInfo.AddResource(buffer);
+
+            _ = SyncResource(buffer, new()
+            {
+                BarrierMasks =
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                }
+            });
+
+            PreDrawCommand();
+            vkCmdDrawIndexedIndirect(_currentCb, buffer.DeviceBuffer, offset, drawCount, stride);
+        }
+
+        private void PreDispatchCommand()
+        {
+            EnsureNoRenderPass();
+
+            SyncBoundResources(_currentComputeResourceSets, _currentComputePipeline!.ResourceSetCount);
+            EmitQueuedSynchro();
+
+            FlushNewResourceSets(
+                _currentComputeResourceSets,
+                _computeResourceSetsChanged,
+                _currentComputePipeline);
         }
 
         public override void Dispatch(uint groupCountX, uint groupCountY, uint groupCountZ)
         {
-            throw new NotImplementedException();
+            PreDispatchCommand();
+            vkCmdDispatch(_currentCb, groupCountX, groupCountY, groupCountZ);
         }
 
         protected override void DispatchIndirectCore(DeviceBuffer indirectBuffer, uint offset)
         {
-            throw new NotImplementedException();
-        }
+            var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
+            _currentStagingInfo.AddResource(buffer);
 
-        // TODO: implement all other members
+            _ = SyncResource(buffer, new()
+            {
+                BarrierMasks =
+                {
+                    StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                    AccessMask = VkAccessFlags.VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                }
+            });
+
+            PreDispatchCommand();
+            vkCmdDispatchIndirect(_currentCb, buffer.DeviceBuffer, offset);
+        }
     }
 }

@@ -12,6 +12,7 @@ using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using VkFormats = Veldrid.Vulkan.VkFormats;
 using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using static Veldrid.Vulkan2.VulkanResourceSet;
 
 namespace Veldrid.Vulkan2
 {
@@ -23,8 +24,10 @@ namespace Veldrid.Vulkan2
         private string? _name;
 
         public List<ResourceRefCount> RefCounts { get; } = new();
-        public List<VulkanTexture> SampledTextures { get; } = new();
-        public List<VulkanTexture> StorageTextures { get; } = new();
+        public List<ResourceWithSyncRequest<VulkanBuffer>> Buffers { get; } = new();
+        public List<ResourceWithSyncRequest<VulkanTextureView>> Textures { get; } = new();
+
+        public readonly record struct ResourceWithSyncRequest<T>(T Resource, SyncRequest Request);
 
         public ResourceRefCount RefCount { get; }
         public override bool IsDisposed => RefCount.IsDisposed;
@@ -35,7 +38,8 @@ namespace Veldrid.Vulkan2
             : base(description)
         {
             _gd = gd;
-            _descriptorCounts = Util.AssertSubtype<ResourceLayout, VulkanResourceLayout>(description.Layout).ResourceCounts;
+            var layout = Util.AssertSubtype<ResourceLayout, VulkanResourceLayout>(description.Layout);
+            _descriptorCounts = layout.ResourceCounts;
             _descriptorAllocationToken = token;
 
             RefCount = new(this);
