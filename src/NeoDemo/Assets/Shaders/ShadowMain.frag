@@ -262,6 +262,7 @@ void main()
         vec3 ptLightDir = normalize(pli.Position - Position_WorldSpace);
         float intensity = clamp(dot(Normal, ptLightDir), 0, 1);
         float lightDistance = distance(pli.Position, Position_WorldSpace);
+        lightDistance = lightDistance * lightDistance; // attenuate at dist^2
         intensity = clamp(intensity * (1 - (lightDistance / pli.Range)), 0, 1);
         pointDiffuse += intensity * vec4(pli.Color, 1) * surfaceColor;
         vec3 lightReflect0 = normalize(reflect(ptLightDir, Normal));
