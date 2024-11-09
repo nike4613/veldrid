@@ -222,13 +222,14 @@ namespace Veldrid.Vulkan2
 
                 Debug.WriteLine(validationMsg);
 
+#if VALIDATE_USAGE
                 if (flags == VkDebugReportFlagsEXT.VK_DEBUG_REPORT_ERROR_BIT_EXT)
                 {
                     VulkanUtil.SetDebugCallbackException(new VeldridException("A Vulkan validation error was encountered:\n"
-                        + validationMsg
-                        + $"for object 0x{obj:X} at location 0x{location:X}"));
+                        + validationMsg));
                     return 0;
                 }
+#endif
                 return 0;
             }
         }

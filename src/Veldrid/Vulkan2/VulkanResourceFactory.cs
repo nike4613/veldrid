@@ -1069,7 +1069,6 @@ namespace Veldrid.Vulkan2
                         {
                             renderingCreateInfo.stencilAttachmentFormat = renderingCreateInfo.depthAttachmentFormat;
                         }
-
                     }
 
                     var colorAttDescs = outputDesc.ColorAttachments.AsSpan();
@@ -1079,7 +1078,7 @@ namespace Veldrid.Vulkan2
                         colorAttachmentFormats[i] = VkFormats.VdToVkPixelFormat(colorAttDescs[i].Format, default);
                     }
 
-                    renderingCreateInfo.colorAttachmentCount = 0;
+                    renderingCreateInfo.colorAttachmentCount = (uint)colorAttDescs.Length;
                 }
                 else
                 {

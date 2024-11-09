@@ -835,12 +835,20 @@ namespace Veldrid.Vulkan2
             else
             {
                 // not a staging buffer, we need to explicitly flush
+
+                var atomSize = _deviceCreateState.PhysicalDeviceProperties.limits.nonCoherentAtomSize;
+                // round offset down to a multiple of atomSize
+                var offset = bufferOffsetInBytes / atomSize * atomSize;
+                // then adjust the size as needed and round it up to a multiple of atomSize
+                var flushSize = (bufferOffsetInBytes - offset + sizeInBytes + atomSize - 1) / atomSize * atomSize;
+
+                // TODO: is this flush even needed?
                 var mappedRange = new VkMappedMemoryRange()
                 {
                     sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                     memory = vkBuffer.Memory.DeviceMemory,
-                    offset = 0,
-                    size = VK_WHOLE_SIZE,
+                    offset = offset,
+                    size = flushSize,
                 };
 
                 VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
