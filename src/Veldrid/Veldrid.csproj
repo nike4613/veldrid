@@ -2,12 +2,13 @@
 
   <PropertyGroup>
     <DocumentationFile>$(BinDir)\$(AssemblyName).xml</DocumentationFile>
-    <NoWarn Condition="'$(Configuration)' == 'Debug'">1591</NoWarn>
+    <NoWarn Condition="'$(Configuration)' == 'Debug'">1591;CA2000</NoWarn>
     <DefineConstants>$(DefineConstants);VALIDATE_USAGE</DefineConstants>
     <DefineConstants Condition="'$(ExcludeD3D11)' == 'true'">$(DefineConstants);EXCLUDE_D3D11_BACKEND</DefineConstants>
     <DefineConstants Condition="'$(ExcludeVulkan)' == 'true'">$(DefineConstants);EXCLUDE_VULKAN_BACKEND</DefineConstants>
     <DefineConstants Condition="'$(ExcludeMetal)' == 'true'">$(DefineConstants);EXCLUDE_METAL_BACKEND</DefineConstants>
     <DefineConstants Condition="'$(ExcludeOpenGL)' == 'true'">$(DefineConstants);EXCLUDE_OPENGL_BACKEND</DefineConstants>
+      <DefineConstants>$(DefineConstants);NEW_VK</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +25,7 @@
   <ItemGroup>
     <Compile Remove="D3D11/**/*" Condition="'$(ExcludeD3D11)' == 'true'" />
     <Compile Remove="Vk/**/*" Condition="'$(ExcludeVulkan)' == 'true'" />
+    <Compile Remove="Vulkan2/**/*" Condition="'$(ExcludeVulkan)' == 'true'" />
     <Compile Remove="MTL/**/*" Condition="'$(ExcludeMetal)' == 'true'" />
     <Compile Remove="OpenGL/**/*" Condition="'$(ExcludeOpenGL)' == 'true'" />
   </ItemGroup>

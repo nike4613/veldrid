@@ -515,6 +515,9 @@ namespace Veldrid.Vulkan2
             {
                 _ = cl.SubmitToQueue(_deviceCreateState.MainQueue, vkFence, null, 0);
             }
+
+            // also take the opportunity to check for fence completions
+            CheckFencesForCompletion();
         }
 
         internal VulkanCommandList GetAndBeginCommandList()
@@ -547,6 +550,7 @@ namespace Veldrid.Vulkan2
         internal (VkSemaphore Sem, VkFence Fence) EndAndSubmitCommands(VulkanCommandList cl, VkPipelineStageFlags2 semaphoreStages = 0)
         {
             cl.End();
+            CheckFencesForCompletion();
 
             lock (QueueLock)
             {

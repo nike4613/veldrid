@@ -1327,7 +1327,11 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options)
         {
+#if NEW_VK
+            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, null);
+#else
             return new VkGraphicsDevice(options, null);
+#endif
         }
 
         /// <summary>
@@ -1338,7 +1342,11 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options, VulkanDeviceOptions vkOptions)
         {
+#if NEW_VK
+            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, vkOptions, null);
+#else
             return new VkGraphicsDevice(options, null, vkOptions);
+#endif
         }
 
         /// <summary>
@@ -1349,7 +1357,11 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options, SwapchainDescription swapchainDescription)
         {
+#if NEW_VK
+            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, swapchainDescription);
+#else
             return new VkGraphicsDevice(options, swapchainDescription);
+#endif
         }
 
         /// <summary>
@@ -1364,7 +1376,11 @@ namespace Veldrid
             SwapchainDescription swapchainDescription,
             VulkanDeviceOptions vkOptions)
         {
+#if NEW_VK
+            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, vkOptions, swapchainDescription);
+#else
             return new VkGraphicsDevice(options, swapchainDescription, vkOptions);
+#endif
         }
 
         /// <summary>
@@ -1384,20 +1400,24 @@ namespace Veldrid
                 options.SyncToVerticalBlank,
                 options.SwapchainSrgbFormat);
 
+#if NEW_VK
+            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, scDesc);
+#else
             return new VkGraphicsDevice(options, scDesc);
+#endif
         }
 #endif
 
 #if !EXCLUDE_OPENGL_BACKEND
-        /// <summary>
-        /// Creates a new <see cref="GraphicsDevice"/> using OpenGL or OpenGL ES, with a main <see cref="Swapchain"/>.
-        /// </summary>
-        /// <param name="options">Describes several common properties of the <see cref="GraphicsDevice"/>.</param>
-        /// <param name="platformInfo">An <see cref="OpenGL.OpenGLPlatformInfo"/> object encapsulating necessary OpenGL context
-        /// information.</param>
-        /// <param name="width">The initial width of the window.</param>
-        /// <param name="height">The initial height of the window.</param>
-        /// <returns>A new <see cref="GraphicsDevice"/> using the OpenGL or OpenGL ES API.</returns>
+            /// <summary>
+            /// Creates a new <see cref="GraphicsDevice"/> using OpenGL or OpenGL ES, with a main <see cref="Swapchain"/>.
+            /// </summary>
+            /// <param name="options">Describes several common properties of the <see cref="GraphicsDevice"/>.</param>
+            /// <param name="platformInfo">An <see cref="OpenGL.OpenGLPlatformInfo"/> object encapsulating necessary OpenGL context
+            /// information.</param>
+            /// <param name="width">The initial width of the window.</param>
+            /// <param name="height">The initial height of the window.</param>
+            /// <returns>A new <see cref="GraphicsDevice"/> using the OpenGL or OpenGL ES API.</returns>
         public static GraphicsDevice CreateOpenGL(
             GraphicsDeviceOptions options,
             OpenGL.OpenGLPlatformInfo platformInfo,
