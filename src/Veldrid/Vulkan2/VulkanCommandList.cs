@@ -1287,7 +1287,7 @@ namespace Veldrid.Vulkan2
         protected override void ResolveTextureCore(Texture source, Texture destination)
         {
             var srcTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
-            var dstTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
+            var dstTex = Util.AssertSubtype<Texture, VulkanTexture>(destination);
             _currentStagingInfo.AddResource(srcTex);
             _currentStagingInfo.AddResource(dstTex);
 
@@ -1314,7 +1314,7 @@ namespace Veldrid.Vulkan2
                     AccessMask = VkAccessFlags.VK_ACCESS_TRANSFER_READ_BIT,
                 }
             });
-            SyncResource(srcTex, new(0, 0, 1, 1), new()
+            SyncResource(dstTex, new(0, 0, 1, 1), new()
             {
                 Layout = VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 BarrierMasks = new()
