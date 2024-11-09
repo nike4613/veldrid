@@ -2097,6 +2097,8 @@ namespace Veldrid.Vulkan2
             _currentFramebuffer.StartRenderPass(this, _currentCb,
                 firstBinding: !_currentFramebufferEverActive,
                 _depthClearValue, _clearValues, _validClearValues);
+            // after we've started a render pass, the clear values are done and we need to make sure to not double-clear
+            _validClearValues.AsSpan().Fill(false);
         }
 
         private bool EnsureNoRenderPass(bool forCreateRenderPass = false)
