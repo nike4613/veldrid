@@ -52,6 +52,10 @@ namespace Veldrid.Vulkan2
         private readonly Dictionary<MappableResource, ResourceMapping> _mappedResources = new();
         private readonly object _mappedResourcesLock = new();
 
+#if DEBUG
+        internal readonly ConcurrentDictionary<VkImage, WeakReference<VulkanTexture>> NativeToManagedImages = new();
+#endif
+
         // optional functions
 
         // synchronization2
@@ -1153,8 +1157,8 @@ namespace Veldrid.Vulkan2
                     Layout = VkImageLayout.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                     BarrierMasks = new()
                     {
-                        StageMask = (VkPipelineStageFlags)uint.MaxValue,
-                        AccessMask = VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                        AccessMask = 0,
                     }
                 });
             }

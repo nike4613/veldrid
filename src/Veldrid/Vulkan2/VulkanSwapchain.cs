@@ -76,6 +76,11 @@ namespace Veldrid.Vulkan2
                 _framebuffer = new(gd, this, description);
 
                 CreateSwapchain(description.Width, description.Height);
+
+                // make sure we pre-emptively acquire the first image for the swapchain
+                AcquireNextImage(_gd.Device, default, imageAvailableFence);
+                vkWaitForFences(_gd.Device, 1, &imageAvailableFence, (VkBool32)true, ulong.MaxValue);
+                vkResetFences(_gd.Device, 1, &imageAvailableFence);
             }
             catch
             {

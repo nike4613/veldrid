@@ -419,7 +419,7 @@ namespace Veldrid.Vulkan2
                 VkPipelineStageFlags.VK_PIPELINE_STAGE_TRANSFER_BIT => 8,
                 VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT => 9,
 
-                _ => Illegal.Value<VkPipelineStageFlags, int>()
+                _ => -1,
             };
 
         private static int ReadersAccessIndex(VkAccessFlags bit)
@@ -488,6 +488,7 @@ namespace Veldrid.Vulkan2
                 stageMask &= ~stageBit;
 
                 var stageIndex = ReadersStageIndex((VkPipelineStageFlags)stageBit);
+                if (stageIndex < 0) continue;
                 for (var accessMask = (uint)masks.AccessMask; accessMask != 0; )
                 {
                     var accessBit = accessMask & ~(accessMask - 1);
@@ -505,7 +506,7 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        private bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, out ResourceBarrierInfo barrier)
+        private bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, bool transitionFromUnknown, out ResourceBarrierInfo barrier)
         {
             const VkAccessFlags AllWriteAccesses =
                 VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -529,7 +530,7 @@ namespace Veldrid.Vulkan2
             }
 
             // note: if the target layout is UNDEFINED, we treat that as "no change". If the current layout is UNDEFINED, this is the first (potential) barrier in this CL
-            var needsLayoutTransition = req.Layout != 0 && state.CurrentImageLayout != 0 && req.Layout != state.CurrentImageLayout;
+            var needsLayoutTransition = req.Layout != 0 && (transitionFromUnknown || state.CurrentImageLayout != 0) && req.Layout != state.CurrentImageLayout;
             var writeAccesses = requestAccess & AllWriteAccesses;
             var needsWrite = writeAccesses != 0 || needsLayoutTransition;
 
@@ -644,7 +645,14 @@ namespace Veldrid.Vulkan2
         }
 
         public bool SyncResource(VulkanTextureView resource, in SyncRequest req)
-            => SyncResource(resource.Target, new(resource.BaseArrayLayer, resource.BaseMipLevel, resource.ArrayLayers, resource.MipLevels), in req);
+            => SyncResource(
+                resource.Target,
+                new(
+                    resource.BaseArrayLayer,
+                    resource.BaseMipLevel,
+                    resource.ArrayLayers * ((resource.Target.Usage & TextureUsage.Cubemap) != 0 ? 6u : 1u),
+                    resource.MipLevels),
+                in req);
 
         public bool SyncResourceDyn(ISynchronizedResource resource, SyncSubresourceRange subresources, in SyncRequest req)
             => resource switch
@@ -686,7 +694,8 @@ namespace Veldrid.Vulkan2
                         localSyncInfo.IsImage = resourceIsImage;
                     }
 
-                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, out var barrier))
+                    // when building barriers here, don't transition from UNKNOWN layout, because that indicates something that should go in the Expected layout
+                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, transitionFromUnknown: false, out var barrier))
                     {
                         // a barrier is needed for this subresource, mark it and try to update in local info
                         localSyncInfo.HasBarrier = true;
@@ -889,7 +898,8 @@ namespace Veldrid.Vulkan2
             foreach (var ((res, sub), info) in _resourceSyncInfo)
             {
                 ref var state = ref res.SyncStateForSubresource(sub);
-                if (TryBuildSyncBarrier(ref state, info.Expected, out var barrier))
+                // here, we want to make sure we transition from UNKNOWN layout, because this is the last chance we'll get
+                if (TryBuildSyncBarrier(ref state, info.Expected, transitionFromUnknown: true, out var barrier))
                 {
                     // TODO: try to merge these barriers????
                     EnqueueBarrier(res, new(sub.Layer, sub.Mip, 1, 1), barrier, info.IsImage);
@@ -2089,7 +2099,7 @@ namespace Veldrid.Vulkan2
                 _depthClearValue, _clearValues, _validClearValues);
         }
 
-        private bool EnsureNoRenderPass()
+        private bool EnsureNoRenderPass(bool forCreateRenderPass = false)
         {
             if (_framebufferRenderPassInstanceActive)
             {
@@ -2100,7 +2110,7 @@ namespace Veldrid.Vulkan2
                 return true;
             }
 
-            if (!_currentFramebufferEverActive && _currentFramebuffer is not null)
+            if (!forCreateRenderPass && !_currentFramebufferEverActive && _currentFramebuffer is not null)
             {
                 // we do this to flush color clears
                 EnsureRenderPass();
@@ -2200,7 +2210,7 @@ namespace Veldrid.Vulkan2
             if (HasPendingBarriers)
             {
                 // if we now have pending barriers, make sure we're not in a render pass so we can sync
-                EnsureNoRenderPass();
+                EnsureNoRenderPass(forCreateRenderPass: true);
             }
 
             if (_vertexBindingsChanged)

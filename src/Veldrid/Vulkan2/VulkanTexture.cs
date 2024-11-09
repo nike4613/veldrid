@@ -80,6 +80,14 @@ namespace Veldrid.Vulkan2
             _syncStates = new SyncState[image != VkImage.NULL ? description.MipLevels * _actualImageArrayLayers : 1];
 
             RefCount = new(this);
+
+#if DEBUG
+            if (image != VkImage.NULL)
+            {
+                // register this instance with the graphics device's dictionary
+                _ = gd.NativeToManagedImages.TryAdd(image, new(this));
+            }
+#endif
         }
 
         private protected override void DisposeCore() => RefCount?.DecrementDispose();
@@ -105,6 +113,14 @@ namespace Veldrid.Vulkan2
             {
                 _gd.MemoryManager.Free(_memory);
             }
+
+#if DEBUG
+            if (_image != VkImage.NULL)
+            {
+                // remove this image from the mapping
+                _ = _gd.NativeToManagedImages.Remove(_image, out _);
+            }
+#endif
         }
 
         public override string? Name
