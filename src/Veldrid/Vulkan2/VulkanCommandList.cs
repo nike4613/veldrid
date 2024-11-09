@@ -26,6 +26,8 @@ namespace Veldrid.Vulkan2
         public override bool IsDisposed => RefCount.IsDisposed;
 
         private string? _name;
+        private string? _stagingBufferName;
+        private string? _stagingTextureName;
 
         // Persistent reuse fields
         private readonly object _commandBufferListLock = new();
@@ -140,6 +142,8 @@ namespace Veldrid.Vulkan2
             set
             {
                 _name = value;
+                _stagingBufferName = value + " (Staging Buffer)";
+                _stagingTextureName = value + " (Staging Texture)";
                 // TODO: staging buffer name?
                 UpdateBufferNames(value);
             }
@@ -506,7 +510,7 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        private bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, bool transitionFromUnknown, out ResourceBarrierInfo barrier)
+        internal static bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, bool transitionFromUnknown, out ResourceBarrierInfo barrier)
         {
             const VkAccessFlags AllWriteAccesses =
                 VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -1255,11 +1259,19 @@ namespace Veldrid.Vulkan2
 
         internal void AddStagingResource(VulkanBuffer buffer)
         {
+            if (_stagingBufferName is { } bufName)
+            {
+                buffer.Name = bufName;
+            }
             _currentStagingInfo.BuffersUsed.Add(buffer);
         }
 
         internal void AddStagingResource(VulkanTexture texture)
         {
+            if (_stagingTextureName is { } texName)
+            {
+                texture.Name = texName;
+            }
             _currentStagingInfo.TexturesUsed.Add(texture);
         }
 

@@ -959,6 +959,48 @@ namespace Veldrid.Vulkan2
             {
                 var mapOffset = memoryBlock.Offset + bufferOffsetInBytes;
 
+                if ((mode & MapMode.Read) != 0)
+                {
+                    var barrierMasks = new SyncBarrierMasks()
+                    {
+                        StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
+                        AccessMask = VkAccessFlags.VK_ACCESS_HOST_READ_BIT,
+                    };
+                    var syncRequest = new SyncRequest()
+                    {
+                        BarrierMasks = barrierMasks,
+                        // note: host reads must be done in PREINITIALIZED or GENERAL.
+                        // Because we don't have a good way to know which we're in here, we always transition
+                        // to GENERAL for a map operation.
+                        Layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
+                    };
+
+                    var needSyncOrLayoutTransition = false;
+                    lock (QueueLock)
+                    {
+                        ref var syncInfo = ref syncResource.SyncStateForSubresource(new(syncSubresource.BaseLayer, syncSubresource.BaseMip));
+                        var syncInfoCopy = syncInfo;
+                        needSyncOrLayoutTransition = VulkanCommandList.TryBuildSyncBarrier(ref syncInfoCopy, syncRequest, transitionFromUnknown: true, out _);
+                        if (!needSyncOrLayoutTransition)
+                        {
+                            // we don't need to do an explicit sync, actually update the sync info
+                            syncInfo = syncInfoCopy;
+                        }
+                    }
+
+                    if (needSyncOrLayoutTransition)
+                    {
+                        // a read mode was requested, we need to sync-to-host to make sure the memory is visible
+                        var cl = GetAndBeginCommandList();
+                        cl.SyncResourceDyn(syncResource, syncSubresource, syncRequest);
+                        var (_, fence) = EndAndSubmitCommands(cl);
+                        // now we need to wait for our fence so we know that the sync has gone through
+                        VulkanUtil.CheckResult(vkWaitForFences(_deviceCreateState.Device, 1, &fence, 1, ulong.MaxValue));
+                        // since we just waited on a fence, lets process pending fences and return stuff to pools
+                        CheckFencesForCompletion();
+                    }
+                }
+
                 ResourceMapping? mapping;
                 lock (_mappedResourcesLock)
                 {
@@ -1002,29 +1044,8 @@ namespace Veldrid.Vulkan2
                     }
                 }
 
-                if ((mode & MapMode.Read) != 0)
-                {
-                    // a read mode was requested, we need to sync-to-host to make sure the memory is visible
-                    var cl = GetAndBeginCommandList();
-                    cl.SyncResourceDyn(syncResource, syncSubresource, new()
-                    {
-                        BarrierMasks = new()
-                        {
-                            StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_HOST_BIT,
-                            AccessMask = VkAccessFlags.VK_ACCESS_HOST_READ_BIT,
-                        },
-                        // note: host reads must be done in PREINITIALIZED or GENERAL.
-                        // Because we don't have a good way to know which we're in here, we always transition
-                        // to GENERAL for a map operation.
-                        Layout = VkImageLayout.VK_IMAGE_LAYOUT_GENERAL
-                    });
-                    var (_, fence) = EndAndSubmitCommands(cl);
-                    // now we need to wait for our fence so we know that the sync has gone through
-                    VulkanUtil.CheckResult(vkWaitForFences(_deviceCreateState.Device, 1, &fence, 1, ulong.MaxValue));
-                    // since we just waited on a fence, lets process pending fences and return stuff to pools
-                    CheckFencesForCompletion();
-                }
-
+                // Note: InvalidateMappedMemoryRanges is only needed if memory is allocated without HOST_COHERENT
+                // We never actually allocate with HOST_COHERENT, only HOST_CACHED, so we need to invalidate.
                 var mappedRange = new VkMappedMemoryRange()
                 {
                     sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,

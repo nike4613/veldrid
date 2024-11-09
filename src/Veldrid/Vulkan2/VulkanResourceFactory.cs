@@ -368,7 +368,7 @@ namespace Veldrid.Vulkan2
                     // Use "host cached" memory when available, for better performance of GPU -> CPU transfers
                     var propertyFlags =
                         VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                        //VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                         VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
                     if (!VulkanUtil.TryFindMemoryType(
