@@ -245,7 +245,6 @@ namespace Veldrid.Vulkan2
             VulkanCommandList CommandList,
             VkCommandBuffer MainCb,
             VkCommandBuffer SyncCb,
-            VkSemaphore SyncSemaphore,
             VkSemaphore MainCompleteSemaphore,
             StagingResourceInfo StagingResourceInfo,
             Action<VulkanCommandList>? OnSubmitCompleted,
@@ -268,7 +267,6 @@ namespace Veldrid.Vulkan2
             _currentStagingInfo = default;
 
             // now we want to do all of the actual submission work
-            var syncToMainSem = Device.GetSemaphore();
             var mainCompleteSem = completionSemaphoreStages != 0 ? Device.GetSemaphore() : default;
             var fence = submitFence is not null ? submitFence.DeviceFence : Device.GetSubmissionFence();
             var fenceWasRented = submitFence is null;
@@ -296,15 +294,6 @@ namespace Veldrid.Vulkan2
                 _pendingImageBarriers = 0;
                 _pendingBufferBarriers = 0;
 
-                // then submit everything with just one submission
-                var syncSemaphoreInfo = new VkSemaphoreSubmitInfo()
-                {
-                    sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-                    semaphore = syncToMainSem,
-                    // TODO: I think we can do better here. We know in principle which stages are in the second scope of our sync, so should duplicate that here.
-                    stageMask = VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                };
-
                 var syncCmdSubmitInfo = new VkCommandBufferSubmitInfo()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -316,6 +305,8 @@ namespace Veldrid.Vulkan2
                     sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
                     semaphore = mainCompleteSem,
                     stageMask = completionSemaphoreStages,
+                    // note: because our sync command buffer contains only barriers which affect submission order, we don't need to include
+                    // semaphores between them. In fact, on NVIDIA, those semaphores can add 1ms(!) of GPU stall.
                 };
 
                 var mainCmdSubmitInfo = new VkCommandBufferSubmitInfo()
@@ -331,15 +322,11 @@ namespace Veldrid.Vulkan2
                         sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
                         commandBufferInfoCount = 1,
                         pCommandBufferInfos = &syncCmdSubmitInfo,
-                        signalSemaphoreInfoCount = 1,
-                        pSignalSemaphoreInfos = &syncSemaphoreInfo,
                     },
                     // then, the main command buffer
                     new()
                     {
                         sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        waitSemaphoreInfoCount = 1,
-                        pWaitSemaphoreInfos = &syncSemaphoreInfo,
                         commandBufferInfoCount = 1,
                         pCommandBufferInfos = &mainCmdSubmitInfo,
                         signalSemaphoreInfoCount = completionSemaphoreStages != 0 ? 1u : 0u,
@@ -354,7 +341,7 @@ namespace Veldrid.Vulkan2
             }
 
             RefCount.Increment();
-            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, syncToMainSem, mainCompleteSem, resourceInfo, onSubmitCompleted, fenceWasRented));
+            Device.RegisterFenceCompletionCallback(fence, new(this, cb, syncCb, mainCompleteSem, resourceInfo, onSubmitCompleted, fenceWasRented));
 
             return (mainCompleteSem, fence);
         }
@@ -385,7 +372,6 @@ namespace Veldrid.Vulkan2
                 }
 
                 // return the semaphores
-                Device.ReturnSemaphore(callbackInfo.SyncSemaphore);
                 if (callbackInfo.MainCompleteSemaphore != VkSemaphore.NULL)
                 {
                     Device.ReturnSemaphore(callbackInfo.MainCompleteSemaphore);

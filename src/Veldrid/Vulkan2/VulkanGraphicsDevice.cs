@@ -836,22 +836,7 @@ namespace Veldrid.Vulkan2
             {
                 // not a staging buffer, we need to explicitly flush
 
-                var atomSize = _deviceCreateState.PhysicalDeviceProperties.limits.nonCoherentAtomSize;
-                // round offset down to a multiple of atomSize
-                var offset = bufferOffsetInBytes / atomSize * atomSize;
-                // then adjust the size as needed and round it up to a multiple of atomSize
-                var flushSize = (bufferOffsetInBytes - offset + sizeInBytes + atomSize - 1) / atomSize * atomSize;
-
-                // TODO: is this flush even needed?
-                var mappedRange = new VkMappedMemoryRange()
-                {
-                    sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-                    memory = vkBuffer.Memory.DeviceMemory,
-                    offset = offset,
-                    size = flushSize,
-                };
-
-                VulkanUtil.CheckResult(vkFlushMappedMemoryRanges(Device, 1, &mappedRange));
+                // note: we don't need to flush because the memory is "coherent"
 
                 // QueueLock is how we sync global sync state
                 lock (QueueLock)
@@ -1195,7 +1180,8 @@ namespace Veldrid.Vulkan2
                     }
                 });
             }
-            var (semaphore, _) = EndAndSubmitCommands(cl, VkPipelineStageFlags2.VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT);
+            // note: synchro affects things in submission order, so we don't need to semaphore-wait
+            EndAndSubmitCommands(cl);
 
             var presentInfo = new VkPresentInfoKHR()
             {
@@ -1203,9 +1189,6 @@ namespace Veldrid.Vulkan2
                 swapchainCount = 1,
                 pSwapchains = &deviceSwapchain,
                 pImageIndices = &imageIndex,
-                // make sure we wait for the synchro commands
-                waitSemaphoreCount = 1,
-                pWaitSemaphores = &semaphore,
             };
 
             var presentLock = vkSwapchain.PresentQueueIndex == _deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx ? QueueLock : vkSwapchain.PresentLock;

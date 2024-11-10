@@ -233,6 +233,19 @@ namespace Veldrid.Vulkan2
                     }
                 }
 
+                if (isStaging)
+                {
+                    if (VulkanUtil.TryFindMemoryType(
+                        _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
+                        memoryRequirements.memoryTypeBits,
+                        memPropFlags | VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                        out _))
+                    {
+                        // if a host-coherent variation is available and we're allocating a staging RW buffer, use it
+                        memPropFlags |= VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                    }
+                }
+
                 memoryBlock = _gd.MemoryManager.Allocate(
                     _gd._deviceCreateState.PhysicalDeviceMemoryProperties,
                     memoryRequirements.memoryTypeBits,
@@ -368,7 +381,7 @@ namespace Veldrid.Vulkan2
                     // Use "host cached" memory when available, for better performance of GPU -> CPU transfers
                     var propertyFlags =
                         VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                        //VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                        VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                         VkMemoryPropertyFlags.VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
                     if (!VulkanUtil.TryFindMemoryType(
