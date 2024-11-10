@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
@@ -336,6 +337,22 @@ namespace Veldrid
 
             byteBuffer[byteCount - 1] = 0; // Add null terminator.
             return bytesWritten;
+        }
+
+        internal static byte[]? GetRentedNullTerminatedUtf8(ReadOnlySpan<char> text, ref Span<byte> byteBuffer)
+        {
+            int byteCount = UTF8.GetByteCount(text) + 1;
+            byte[]? arr = null;
+            if (byteBuffer.Length < byteCount)
+            {
+                byteBuffer = arr = ArrayPool<byte>.Shared.Rent(byteCount);
+            }
+
+            int bytesWritten = UTF8.GetBytes(text, byteBuffer);
+            Debug.Assert(bytesWritten == byteCount - 1);
+
+            byteBuffer[byteCount - 1] = 0; // Add null terminator.
+            return arr;
         }
     }
 }
