@@ -1277,7 +1277,7 @@ namespace Veldrid.Vulkan2
             _currentStagingInfo.AddResource(srcTex);
             _currentStagingInfo.AddResource(dstTex);
 
-            PushDebugGroupCore($"ResolveTexture({srcTex.Name}, {dstTex.Name})");
+            //PushDebugGroupCore($"ResolveTexture({srcTex.Name}, {dstTex.Name})");
 
             // texture resolve cannot be done in a render pass
             EnsureNoRenderPass();
@@ -1323,12 +1323,12 @@ namespace Veldrid.Vulkan2
                 VkImageLayout.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 1, &region);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         private protected override void UpdateBufferCore(DeviceBuffer buffer, uint bufferOffsetInBytes, nint source, uint sizeInBytes)
         {
-            PushDebugGroupCore($"UpdateBuffer({buffer.Name}, {sizeInBytes})");
+            //PushDebugGroupCore($"UpdateBuffer({buffer.Name}, {sizeInBytes})");
 
             var stagingBuffer = Device.GetPooledStagingBuffer(sizeInBytes);
             AddStagingResource(stagingBuffer);
@@ -1336,7 +1336,7 @@ namespace Veldrid.Vulkan2
             Device.UpdateBuffer(stagingBuffer, 0, source, sizeInBytes);
             CopyBuffer(stagingBuffer, 0, buffer, bufferOffsetInBytes, sizeInBytes);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         protected override void CopyBufferCore(DeviceBuffer source, DeviceBuffer destination, ReadOnlySpan<BufferCopyCommand> commands)
@@ -1346,7 +1346,7 @@ namespace Veldrid.Vulkan2
             _currentStagingInfo.AddResource(srcBuf);
             _currentStagingInfo.AddResource(dstBuf);
 
-            PushDebugGroupCore($"CopyBuffer({srcBuf.Name}, {dstBuf.Name})");
+            //PushDebugGroupCore($"CopyBuffer({srcBuf.Name}, {dstBuf.Name})");
 
             EnsureNoRenderPass();
 
@@ -1420,7 +1420,7 @@ namespace Veldrid.Vulkan2
                 }
             }
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         protected override void CopyTextureCore(
@@ -1435,7 +1435,7 @@ namespace Veldrid.Vulkan2
 
             PushDebugGroupCore($"CopyTexture({srcTex.Name}, {dstTex})");
 
-            EnsureNoRenderPass();
+            //EnsureNoRenderPass();
 
             var srcIsStaging = (srcTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
             var dstIsStaging = (dstTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
@@ -1672,7 +1672,7 @@ namespace Veldrid.Vulkan2
                 ArrayPool<VkBufferCopy>.Shared.Return(copyRegions);
             }
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         private protected override void GenerateMipmapsCore(Texture texture)
@@ -1838,7 +1838,7 @@ namespace Veldrid.Vulkan2
                 // the current render pass, it *should* be safe to write-sync and immediately enqueue
                 // the resulting buffer.
 
-                PushDebugGroupCore($"ClearColorTarget({index})");
+                //PushDebugGroupCore($"ClearColorTarget({index})");
 
                 var tex = Util.AssertSubtype<Texture, VulkanTexture>(_currentFramebuffer!.ColorTargets[(int)index].Target);
 
@@ -1876,7 +1876,7 @@ namespace Veldrid.Vulkan2
                 // TODO: maybe we should try to batch these?
                 vkCmdClearAttachments(_currentCb, 1, &clearAttachment, 1, &clearRect);
 
-                PopDebugGroupCore();
+                //PopDebugGroupCore();
             }
         }
 
@@ -1898,7 +1898,7 @@ namespace Veldrid.Vulkan2
             }
             else
             {
-                PushDebugGroupCore($"ClearDepthStencil()");
+                //PushDebugGroupCore($"ClearDepthStencil()");
 
                 // A render pass is currently active. All of the same caveats apply as in ClearColorTargetCore.
                 var renderableExtent = _currentFramebuffer!.RenderableExtent;
@@ -1943,14 +1943,14 @@ namespace Veldrid.Vulkan2
                     vkCmdClearAttachments(_currentCb, 1, &clearAttachment, 1, &clearRect);
                 }
 
-                PopDebugGroupCore();
+                //PopDebugGroupCore();
             }
         }
 
 
         protected override void SetFramebufferCore(Framebuffer fb)
         {
-            PushDebugGroupCore($"SetFramebuffer({{ {fb.Name} }})");
+            //PushDebugGroupCore($"SetFramebuffer({{ {fb.Name} }})");
 
             var vkFbb = Util.AssertSubtype<Framebuffer, VulkanFramebufferBase>(fb);
             _currentStagingInfo.AddRefCount(vkFbb.RefCount);
@@ -1983,7 +1983,7 @@ namespace Veldrid.Vulkan2
             Util.ClearArray(_validClearValues);
             _depthClearValue = null;
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         public override void SetViewport(uint index, in Viewport viewport)
@@ -2354,22 +2354,22 @@ namespace Veldrid.Vulkan2
 
         private protected override void DrawCore(uint vertexCount, uint instanceCount, uint vertexStart, uint instanceStart)
         {
-            PushDebugGroupCore($"Draw({vertexCount}, {instanceCount})");
+            //PushDebugGroupCore($"Draw({vertexCount}, {instanceCount})");
 
             PreDrawCommand();
             vkCmdDraw(_currentCb, vertexCount, instanceCount, vertexStart, instanceStart);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         private protected override void DrawIndexedCore(uint indexCount, uint instanceCount, uint indexStart, int vertexOffset, uint instanceStart)
         {
-            PushDebugGroupCore($"DrawIndexed({indexCount}, {instanceCount})");
+            //PushDebugGroupCore($"DrawIndexed({indexCount}, {instanceCount})");
 
             PreDrawCommand();
             vkCmdDrawIndexed(_currentCb, indexCount, instanceCount, indexStart, vertexOffset, instanceStart);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         protected override void DrawIndirectCore(DeviceBuffer indirectBuffer, uint offset, uint drawCount, uint stride)
@@ -2377,7 +2377,7 @@ namespace Veldrid.Vulkan2
             var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
             _currentStagingInfo.AddResource(buffer);
 
-            PushDebugGroupCore($"DrawIndirect({indirectBuffer.Name}, {drawCount})");
+            //PushDebugGroupCore($"DrawIndirect({indirectBuffer.Name}, {drawCount})");
 
             _ = SyncResource(buffer, new()
             {
@@ -2391,7 +2391,7 @@ namespace Veldrid.Vulkan2
             PreDrawCommand();
             vkCmdDrawIndirect(_currentCb, buffer.DeviceBuffer, offset, drawCount, stride);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         protected override void DrawIndexedIndirectCore(DeviceBuffer indirectBuffer, uint offset, uint drawCount, uint stride)
@@ -2399,7 +2399,7 @@ namespace Veldrid.Vulkan2
             var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
             _currentStagingInfo.AddResource(buffer);
 
-            PushDebugGroupCore($"DrawIndexedIndirect({indirectBuffer.Name}, {drawCount})");
+            //PushDebugGroupCore($"DrawIndexedIndirect({indirectBuffer.Name}, {drawCount})");
 
             _ = SyncResource(buffer, new()
             {
@@ -2413,7 +2413,7 @@ namespace Veldrid.Vulkan2
             PreDrawCommand();
             vkCmdDrawIndexedIndirect(_currentCb, buffer.DeviceBuffer, offset, drawCount, stride);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         private void PreDispatchCommand()
@@ -2431,12 +2431,12 @@ namespace Veldrid.Vulkan2
 
         public override void Dispatch(uint groupCountX, uint groupCountY, uint groupCountZ)
         {
-            PushDebugGroupCore($"Dispatch({groupCountX}, {groupCountY}, {groupCountZ})");
+            //PushDebugGroupCore($"Dispatch({groupCountX}, {groupCountY}, {groupCountZ})");
 
             PreDispatchCommand();
             vkCmdDispatch(_currentCb, groupCountX, groupCountY, groupCountZ);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
 
         protected override void DispatchIndirectCore(DeviceBuffer indirectBuffer, uint offset)
@@ -2444,7 +2444,7 @@ namespace Veldrid.Vulkan2
             var buffer = Util.AssertSubtype<DeviceBuffer, VulkanBuffer>(indirectBuffer);
             _currentStagingInfo.AddResource(buffer);
 
-            PushDebugGroupCore($"DispatchIndirect({indirectBuffer.Name})");
+            //PushDebugGroupCore($"DispatchIndirect({indirectBuffer.Name})");
 
             _ = SyncResource(buffer, new()
             {
@@ -2458,7 +2458,7 @@ namespace Veldrid.Vulkan2
             PreDispatchCommand();
             vkCmdDispatchIndirect(_currentCb, buffer.DeviceBuffer, offset);
 
-            PopDebugGroupCore();
+            //PopDebugGroupCore();
         }
     }
 }
