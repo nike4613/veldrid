@@ -844,14 +844,10 @@ namespace Veldrid.Vulkan2
             }
 
             var needsAnyBarrier = false;
-            var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
-            var currentBarrier = new ResourceBarrierInfo();
 
             for (var i = 0; i < subresources.NumLayers; i++)
             {
                 var array = (uint)(i + subresources.BaseLayer);
-                var localSubresources = new SyncSubresourceRange(array, 0, 1, 0);
-                var localBarrier = new ResourceBarrierInfo();
 
                 for (var j = 0; j < subresources.NumMips; j++)
                 {
@@ -866,21 +862,7 @@ namespace Veldrid.Vulkan2
                         // a barrier is needed for this subresource, mark it and try to update in local info
                         localSyncInfo.HasBarrier = true;
                         needsAnyBarrier = true;
-
-                        // try to merge barriers
-                        if (TryMergeBarriers(ref localBarrier, barrier)
-                            // the barriers could be merged, try to merge this subresource range
-                            && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
-                        {
-                            // both barriers and subresource ranges could be moreged, no more work to do here
-                        }
-                        else
-                        {
-                            // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                            EnqueueBarrier(resource, localSubresources, localBarrier, resourceIsImage);
-                            localSubresources = singleSubresourceRange;
-                            localBarrier = barrier;
-                        }
+                        EnqueueBarrier(resource, singleSubresourceRange, barrier, resourceIsImage);
                     }
 
                     // mark the expected state appropriately
@@ -895,25 +877,7 @@ namespace Veldrid.Vulkan2
                         }
                     }
                 }
-
-                // try to merge the local barriers with the current barriers (just like in the loop)
-                if (TryMergeBarriers(ref currentBarrier, localBarrier)
-                    // the barriers could be merged, try to merge this subresource range
-                    && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
-                {
-                    // both barriers and subresource ranges could be moreged, no more work to do here
-                }
-                else
-                {
-                    // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                    EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
-                    currentSubresources = localSubresources;
-                    currentBarrier = localBarrier;
-                }
             }
-
-            // after we've hit all subresources, enqueue what's left
-            EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
 
             return needsAnyBarrier;
         }
@@ -930,15 +894,9 @@ namespace Veldrid.Vulkan2
             {
                 var res = info.Resource;
 
-                var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
-                var currentBarrier = new ResourceBarrierInfo();
-
                 // NOTE: this SHOULD be kept in sync with the above, if it needs any changes.
                 for (var layer = 0u; layer < info.SubresourceCounts.Layer; layer++)
                 {
-                    var localSubresources = new SyncSubresourceRange(layer, 0, 1, 0);
-                    var localBarrier = new ResourceBarrierInfo();
-
                     for (var mip = 0u; mip < info.SubresourceCounts.Mip; mip++)
                     {
                         var subresource = new SyncSubresource(layer, mip);
@@ -949,20 +907,7 @@ namespace Veldrid.Vulkan2
                         // when building barriers here, transition from UNKNOWN layout, because this is our last chance
                         if (TryBuildSyncBarrier(ref targetState, in localState.Expected, transitionFromUnknown: true, out var barrier))
                         {
-                            // try to merge barriers
-                            if (TryMergeBarriers(ref localBarrier, barrier)
-                                // the barriers could be merged, try to merge this subresource range
-                                && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
-                            {
-                                // both barriers and subresource ranges could be moreged, no more work to do here
-                            }
-                            else
-                            {
-                                // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                                EnqueueBarrier(res, localSubresources, localBarrier, info.IsImage);
-                                localSubresources = singleSubresourceRange;
-                                localBarrier = barrier;
-                            }
+                            EnqueueBarrier(res, singleSubresourceRange, barrier, info.IsImage);
                         }
 
                         // The resulting synchronization is not complete; it is only up to the *start* of the command buffer.
@@ -980,25 +925,7 @@ namespace Veldrid.Vulkan2
                             targetState.PerStageReaders |= localState.LocalState.PerStageReaders;
                         }
                     }
-
-                    // try to merge the local barriers with the current barriers (just like in the loop)
-                    if (TryMergeBarriers(ref currentBarrier, localBarrier)
-                        // the barriers could be merged, try to merge this subresource range
-                        && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
-                    {
-                        // both barriers and subresource ranges could be moreged, no more work to do here
-                    }
-                    else
-                    {
-                        // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                        EnqueueBarrier(res, currentSubresources, currentBarrier, info.IsImage);
-                        currentSubresources = localSubresources;
-                        currentBarrier = localBarrier;
-                    }
                 }
-
-                // after we've hit all subresources, enqueue what's left
-                EnqueueBarrier(res, currentSubresources, currentBarrier, info.IsImage);
 
                 info.Clear();
             }
