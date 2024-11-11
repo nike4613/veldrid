@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
@@ -14,7 +11,6 @@ using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.Vulkan;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace Veldrid.Vulkan2
 {
@@ -33,10 +29,53 @@ namespace Veldrid.Vulkan2
         private readonly object _commandBufferListLock = new();
         private readonly Stack<VkCommandBuffer> _availableCommandBuffers = new();
         private readonly Stack<StagingResourceInfo> _availableStagingInfo = new();
-        private readonly Dictionary<(ISynchronizedResource Rs, SyncSubresource Sr), ResourceSyncInfo> _resourceSyncInfo = new();
+        private readonly Dictionary<ISynchronizedResource, ResourceSyncInfo> _resourceSyncInfo = new();
         private readonly List<PendingBarrier> _pendingBarriers = new();
         private int _pendingImageBarriers;
         private int _pendingBufferBarriers;
+
+        private struct ResourceSyncInfo
+        {
+            public readonly ISynchronizedResource Resource;
+            private readonly SubresourceSyncInfo[]? _srs;
+            public readonly SyncSubresource SubresourceCounts;
+            private SubresourceSyncInfo _sr0;
+            public readonly bool IsImage;
+
+            public ResourceSyncInfo(ISynchronizedResource resource, bool isImage)
+            {
+                Resource = resource;
+                IsImage = isImage;
+                _sr0 = default;
+
+                SubresourceCounts = resource.SubresourceCounts;
+                var srCount = ((int)SubresourceCounts.Mip * (int)SubresourceCounts.Layer) - 1;
+
+                if (srCount > 0)
+                {
+                    // srCount here is the number that need to go in an array
+                    _srs = ArrayPool<SubresourceSyncInfo>.Shared.Rent(srCount);
+                    _srs.AsSpan().Clear();
+                }
+            }
+
+            public void Clear()
+            {
+                if (_srs is { } srs)
+                {
+                    ArrayPool<SubresourceSyncInfo>.Shared.Return(srs);
+                }
+
+                this = default;
+            }
+
+            [UnscopedRef]
+            public ref SubresourceSyncInfo GetSyncInfo(SyncSubresource subresource)
+            {
+                var index = (SubresourceCounts.Mip * subresource.Layer) + subresource.Mip;
+                return ref index == 0 ? ref _sr0 : ref _srs![index - 1];
+            }
+        }
 
         private readonly record struct PendingBarrier(
             ISynchronizedResource Resource,
@@ -652,96 +691,6 @@ namespace Veldrid.Vulkan2
                 _ => Illegal.Value<ISynchronizedResource, bool>(),
             };
 
-        private bool SyncResourceCore(ISynchronizedResource resource, SyncSubresourceRange subresources, bool resourceIsImage, in SyncRequest req)
-        {
-            if (resourceIsImage)
-            {
-                Debug.Assert(resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL);
-            }
-            else
-            {
-                Debug.Assert(resource is VulkanBuffer or VulkanTexture { DeviceImage.Value: 0 });
-            }
-
-            var needsAnyBarrier = false;
-            var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
-            var currentBarrier = new ResourceBarrierInfo();
-
-            for (var i = 0; i < subresources.NumLayers; i++)
-            {
-                var array = (uint)(i + subresources.BaseLayer);
-                var localSubresources = new SyncSubresourceRange(array, 0, 1, 0);
-                var localBarrier = new ResourceBarrierInfo();
-
-                for (var j = 0; j < subresources.NumMips; j++)
-                {
-                    var mip = (uint)(j + subresources.BaseMip);
-                    var subresource = new SyncSubresource(array, mip);
-                    var singleSubresourceRange = new SyncSubresourceRange(array, mip, 1, 1);
-                    ref var localSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, (resource, subresource), out var exists);
-                    if (!exists)
-                    {
-                        localSyncInfo.IsImage = resourceIsImage;
-                    }
-
-                    // when building barriers here, don't transition from UNKNOWN layout, because that indicates something that should go in the Expected layout
-                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, transitionFromUnknown: false, out var barrier))
-                    {
-                        // a barrier is needed for this subresource, mark it and try to update in local info
-                        localSyncInfo.HasBarrier = true;
-                        needsAnyBarrier = true;
-
-                        // try to merge barriers
-                        if (TryMergeBarriers(ref localBarrier, barrier)
-                            // the barriers could be merged, try to merge this subresource range
-                            && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
-                        {
-                            // both barriers and subresource ranges could be moreged, no more work to do here
-                        }
-                        else
-                        {
-                            // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                            EnqueueBarrier(resource, localSubresources, localBarrier, resourceIsImage);
-                            localSubresources = singleSubresourceRange;
-                            localBarrier = barrier;
-                        }
-                    }
-
-                    // mark the expected state appropriately
-                    if (!localSyncInfo.HasBarrier)
-                    {
-                        localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
-                        localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
-                        // we want to make note of the first layout that we expect, so we can transition into it at the right time
-                        if (localSyncInfo.Expected.Layout == 0)
-                        {
-                            localSyncInfo.Expected.Layout = req.Layout;
-                        }
-                    }
-                }
-
-                // try to merge the local barriers with the current barriers (just like in the loop)
-                if (TryMergeBarriers(ref currentBarrier, localBarrier)
-                    // the barriers could be merged, try to merge this subresource range
-                    && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
-                {
-                    // both barriers and subresource ranges could be moreged, no more work to do here
-                }
-                else
-                {
-                    // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
-                    EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
-                    currentSubresources = localSubresources;
-                    currentBarrier = localBarrier;
-                }
-            }
-
-            // after we've hit all subresources, enqueue what's left
-            EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
-
-            return needsAnyBarrier;
-        }
-
         private static bool TryMergeBarriers(ref ResourceBarrierInfo targetBarrier, in ResourceBarrierInfo sourceBarrier)
         {
             if (targetBarrier == default)
@@ -877,6 +826,98 @@ namespace Veldrid.Vulkan2
             }
         }
 
+        private bool SyncResourceCore(ISynchronizedResource resource, SyncSubresourceRange subresources, bool resourceIsImage, in SyncRequest req)
+        {
+            if (resourceIsImage)
+            {
+                Debug.Assert(resource is VulkanTexture vkTex && vkTex.DeviceImage != VkImage.NULL);
+            }
+            else
+            {
+                Debug.Assert(resource is VulkanBuffer or VulkanTexture { DeviceImage.Value: 0 });
+            }
+
+            ref var resourceSyncInfo = ref CollectionsMarshal.GetValueRefOrAddDefault(_resourceSyncInfo, resource, out var exists);
+            if (!exists)
+            {
+                resourceSyncInfo = new(resource, resourceIsImage);
+            }
+
+            var needsAnyBarrier = false;
+            var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
+            var currentBarrier = new ResourceBarrierInfo();
+
+            for (var i = 0; i < subresources.NumLayers; i++)
+            {
+                var array = (uint)(i + subresources.BaseLayer);
+                var localSubresources = new SyncSubresourceRange(array, 0, 1, 0);
+                var localBarrier = new ResourceBarrierInfo();
+
+                for (var j = 0; j < subresources.NumMips; j++)
+                {
+                    var mip = (uint)(j + subresources.BaseMip);
+                    var subresource = new SyncSubresource(array, mip);
+                    var singleSubresourceRange = new SyncSubresourceRange(array, mip, 1, 1);
+                    ref var localSyncInfo = ref resourceSyncInfo.GetSyncInfo(subresource);
+
+                    // when building barriers here, don't transition from UNKNOWN layout, because that indicates something that should go in the Expected layout
+                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, transitionFromUnknown: false, out var barrier))
+                    {
+                        // a barrier is needed for this subresource, mark it and try to update in local info
+                        localSyncInfo.HasBarrier = true;
+                        needsAnyBarrier = true;
+
+                        // try to merge barriers
+                        if (TryMergeBarriers(ref localBarrier, barrier)
+                            // the barriers could be merged, try to merge this subresource range
+                            && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
+                        {
+                            // both barriers and subresource ranges could be moreged, no more work to do here
+                        }
+                        else
+                        {
+                            // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                            EnqueueBarrier(resource, localSubresources, localBarrier, resourceIsImage);
+                            localSubresources = singleSubresourceRange;
+                            localBarrier = barrier;
+                        }
+                    }
+
+                    // mark the expected state appropriately
+                    if (!localSyncInfo.HasBarrier)
+                    {
+                        localSyncInfo.Expected.BarrierMasks.StageMask |= req.BarrierMasks.StageMask;
+                        localSyncInfo.Expected.BarrierMasks.AccessMask |= req.BarrierMasks.AccessMask;
+                        // we want to make note of the first layout that we expect, so we can transition into it at the right time
+                        if (localSyncInfo.Expected.Layout == 0)
+                        {
+                            localSyncInfo.Expected.Layout = req.Layout;
+                        }
+                    }
+                }
+
+                // try to merge the local barriers with the current barriers (just like in the loop)
+                if (TryMergeBarriers(ref currentBarrier, localBarrier)
+                    // the barriers could be merged, try to merge this subresource range
+                    && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
+                {
+                    // both barriers and subresource ranges could be moreged, no more work to do here
+                }
+                else
+                {
+                    // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                    EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
+                    currentSubresources = localSubresources;
+                    currentBarrier = localBarrier;
+                }
+            }
+
+            // after we've hit all subresources, enqueue what's left
+            EnqueueBarrier(resource, currentSubresources, currentBarrier, resourceIsImage);
+
+            return needsAnyBarrier;
+        }
+
         private void EmitInitialResourceSync(VkCommandBuffer cb)
         {
             Debug.Assert(_pendingBarriers.Count == 0);
@@ -885,30 +926,81 @@ namespace Veldrid.Vulkan2
 
             // we're just going to reuse the existing buffers we have, because it's all we actually need
             // note: we're also under a global lock here, so it's safe to mutate the global information
-            foreach (var ((res, sub), info) in _resourceSyncInfo)
+            foreach (var (_, info) in _resourceSyncInfo)
             {
-                ref var state = ref res.SyncStateForSubresource(sub);
-                // here, we want to make sure we transition from UNKNOWN layout, because this is the last chance we'll get
-                if (TryBuildSyncBarrier(ref state, info.Expected, transitionFromUnknown: true, out var barrier))
+                var res = info.Resource;
+
+                var currentSubresources = new SyncSubresourceRange(0, 0, 0, 0);
+                var currentBarrier = new ResourceBarrierInfo();
+
+                // NOTE: this SHOULD be kept in sync with the above, if it needs any changes.
+                for (var layer = 0u; layer < info.SubresourceCounts.Layer; layer++)
                 {
-                    // TODO: try to merge these barriers????
-                    EnqueueBarrier(res, new(sub.Layer, sub.Mip, 1, 1), barrier, info.IsImage);
+                    var localSubresources = new SyncSubresourceRange(layer, 0, 1, 0);
+                    var localBarrier = new ResourceBarrierInfo();
+
+                    for (var mip = 0u; mip < info.SubresourceCounts.Mip; mip++)
+                    {
+                        var subresource = new SyncSubresource(layer, mip);
+                        var singleSubresourceRange = new SyncSubresourceRange(layer, mip, 1, 1);
+                        ref var localState = ref info.GetSyncInfo(subresource);
+                        ref var targetState = ref res.SyncStateForSubresource(subresource);
+
+                        // when building barriers here, transition from UNKNOWN layout, because this is our last chance
+                        if (TryBuildSyncBarrier(ref targetState, in localState.Expected, transitionFromUnknown: true, out var barrier))
+                        {
+                            // try to merge barriers
+                            if (TryMergeBarriers(ref localBarrier, barrier)
+                                // the barriers could be merged, try to merge this subresource range
+                                && TryMergeSubresourceRange(ref localSubresources, singleSubresourceRange))
+                            {
+                                // both barriers and subresource ranges could be moreged, no more work to do here
+                            }
+                            else
+                            {
+                                // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                                EnqueueBarrier(res, localSubresources, localBarrier, info.IsImage);
+                                localSubresources = singleSubresourceRange;
+                                localBarrier = barrier;
+                            }
+                        }
+
+                        // The resulting synchronization is not complete; it is only up to the *start* of the command buffer.
+                        // We need *now* to update the global state according to the local state.
+                        if (localState.LocalState.LastWriter.AccessMask != 0)
+                        {
+                            // there was a write in this commandlist, we need to full-overwrite
+                            targetState = localState.LocalState;
+                        }
+                        else
+                        {
+                            // there was no write, just update the readers lists
+                            targetState.OngoingReaders.StageMask |= localState.LocalState.OngoingReaders.StageMask;
+                            targetState.OngoingReaders.AccessMask |= localState.LocalState.OngoingReaders.AccessMask;
+                            targetState.PerStageReaders |= localState.LocalState.PerStageReaders;
+                        }
+                    }
+
+                    // try to merge the local barriers with the current barriers (just like in the loop)
+                    if (TryMergeBarriers(ref currentBarrier, localBarrier)
+                        // the barriers could be merged, try to merge this subresource range
+                        && TryMergeSubresourceRange(ref currentSubresources, localSubresources))
+                    {
+                        // both barriers and subresource ranges could be moreged, no more work to do here
+                    }
+                    else
+                    {
+                        // either the barriers or subresources couldn't be merged, enqueue the pending local barrier and reset it to what we just got
+                        EnqueueBarrier(res, currentSubresources, currentBarrier, info.IsImage);
+                        currentSubresources = localSubresources;
+                        currentBarrier = localBarrier;
+                    }
                 }
 
-                // The resulting synchronization is not complete; it is only up to the *start* of the command buffer.
-                // We need *now* to update the global state according to the local state.
-                if (info.LocalState.LastWriter.AccessMask != 0)
-                {
-                    // there was a write in this commandlist, we need to full-overwrite
-                    state = info.LocalState;
-                }
-                else
-                {
-                    // there was no write, just update the readers lists
-                    state.OngoingReaders.StageMask |= info.LocalState.OngoingReaders.StageMask;
-                    state.OngoingReaders.AccessMask |= info.LocalState.OngoingReaders.AccessMask;
-                    state.PerStageReaders |= info.LocalState.PerStageReaders;
-                }
+                // after we've hit all subresources, enqueue what's left
+                EnqueueBarrier(res, currentSubresources, currentBarrier, info.IsImage);
+
+                info.Clear();
             }
 
             // then emit the synchronization to the target command buffer

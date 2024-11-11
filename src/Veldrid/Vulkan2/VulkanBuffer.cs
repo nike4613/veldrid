@@ -31,6 +31,7 @@ namespace Veldrid.Vulkan2
         public override bool IsDisposed => RefCount.IsDisposed;
 
         public Span<SyncState> AllSyncStates => new(ref _syncState);
+        SyncSubresource ISynchronizedResource.SubresourceCounts => new(1, 1);
         ref SyncState ISynchronizedResource.SyncStateForSubresource(SyncSubresource subresource)
         {
             Debug.Assert(subresource == default);

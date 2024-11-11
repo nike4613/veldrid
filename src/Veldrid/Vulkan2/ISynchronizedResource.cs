@@ -6,6 +6,7 @@ namespace Veldrid.Vulkan2
     {
         //ref SyncState SyncState { get; }
         Span<SyncState> AllSyncStates { get; }
+        SyncSubresource SubresourceCounts { get; }
         ref SyncState SyncStateForSubresource(SyncSubresource subresource);
     }
 }

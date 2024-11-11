@@ -29,12 +29,11 @@ namespace Veldrid.Vulkan2
         public VkImageLayout CurrentImageLayout;
     }
 
-    internal struct ResourceSyncInfo()
+    internal struct SubresourceSyncInfo()
     {
         public SyncRequest Expected;
         public SyncState LocalState;
         public bool HasBarrier;
-        public bool IsImage;
     }
 
     internal record struct ResourceBarrierInfo

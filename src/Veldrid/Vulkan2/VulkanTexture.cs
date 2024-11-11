@@ -37,6 +37,7 @@ namespace Veldrid.Vulkan2
 
         private readonly SyncState[] _syncStates;
         public Span<SyncState> AllSyncStates => _syncStates;
+        SyncSubresource ISynchronizedResource.SubresourceCounts => new(_actualImageArrayLayers, MipLevels);
         public ref SyncState SyncStateForSubresource(SyncSubresource subresource)
             => ref _syncStates[_image != VkImage.NULL ? (subresource.Mip * _actualImageArrayLayers) + subresource.Layer : 0];
 
