@@ -9,6 +9,9 @@ using Veldrid.NeoDemo.Objects;
 using Veldrid.StartupUtilities;
 using Veldrid.Utilities;
 using Veldrid.Sdl2;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Text;
 
 namespace Veldrid.NeoDemo
 {
@@ -229,8 +232,14 @@ namespace Veldrid.NeoDemo
             _scene.AddRenderable(mesh);
         }
 
-        public void Run()
+        public void Run(string[] args)
         {
+            FrametimeQueue? frametimeQueue = null;
+            if (args is [var filename, ..])
+            {
+                frametimeQueue = new(filename);
+            }
+
             long previousFrameTicks = 0;
             Stopwatch sw = new();
             sw.Start();
@@ -245,6 +254,7 @@ namespace Veldrid.NeoDemo
                     deltaSeconds = (currentFrameTicks - previousFrameTicks) / (double) Stopwatch.Frequency;
                 }
 
+                frametimeQueue?.SubmitFrametime(currentFrameTicks - previousFrameTicks);
                 previousFrameTicks = currentFrameTicks;
 
                 Sdl2Events.ProcessEvents();
@@ -261,6 +271,66 @@ namespace Veldrid.NeoDemo
 
             DestroyAllObjects();
             _gd.Dispose();
+            frametimeQueue?.Stop();
+        }
+
+        private sealed class FrametimeQueue
+        {
+            private readonly ConcurrentQueue<long> pendingFrametimes = new();
+            private readonly ManualResetEventSlim evt = new();
+            private readonly Thread thread;
+            private readonly StreamWriter writer;
+            private int running = 1;
+
+            public FrametimeQueue(string targetFile)
+            {
+                thread = new Thread(ThreadProc)
+                {
+                    IsBackground = false
+                };
+                thread.Start();
+
+                writer = File.CreateText(targetFile);
+            }
+
+            public void Stop()
+            {
+                Volatile.Write(ref running, 0);
+                evt.Set();
+                thread.Join();
+                writer.Dispose();
+            }
+
+            public void SubmitFrametime(long time)
+            {
+                pendingFrametimes.Enqueue(time);
+                evt.Set();
+            }
+
+            private void ThreadProc()
+            {
+                var sb = new StringBuilder();
+
+                while (running != 0)
+                {
+                    evt.Wait();
+                    evt.Reset();
+
+                    while (pendingFrametimes.TryDequeue(out var frametime))
+                    {
+                        _ = sb.AppendLine($"{frametime}");
+
+                        if (sb.Length > 2048)
+                        {
+                            writer.Write(sb);
+                            sb.Clear();
+                        }
+                    }
+
+                    writer.Write(sb);
+                    sb.Clear();
+                }
+            }
         }
 
         private void Update(float deltaSeconds)

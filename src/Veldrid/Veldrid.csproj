@@ -8,7 +8,7 @@
     <DefineConstants Condition="'$(ExcludeVulkan)' == 'true'">$(DefineConstants);EXCLUDE_VULKAN_BACKEND</DefineConstants>
     <DefineConstants Condition="'$(ExcludeMetal)' == 'true'">$(DefineConstants);EXCLUDE_METAL_BACKEND</DefineConstants>
     <DefineConstants Condition="'$(ExcludeOpenGL)' == 'true'">$(DefineConstants);EXCLUDE_OPENGL_BACKEND</DefineConstants>
-      <DefineConstants>$(DefineConstants);NEW_VK</DefineConstants>
+    <DefineConstants>$(DefineConstants);NEW_VK</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>

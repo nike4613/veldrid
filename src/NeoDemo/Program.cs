@@ -10,7 +10,7 @@ namespace Veldrid.NeoDemo
             {
                 Sdl2.SDL_version version;
                 Sdl2.Sdl2Native.SDL_GetVersion(&version);
-                new NeoDemo().Run();
+                new NeoDemo().Run(args);
             }
             catch (Exception e)
             {
