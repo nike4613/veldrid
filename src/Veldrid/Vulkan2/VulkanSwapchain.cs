@@ -24,10 +24,16 @@ namespace Veldrid.Vulkan2
         private readonly VkSurfaceKHR _surface;
         private VkSwapchainKHR _deviceSwapchain;
         private readonly VulkanSwapchainFramebuffer _framebuffer;
-        private VkFence _imageAvailableFence;
+
         private readonly int _presentQueueIndex;
         private readonly VkQueue _presentQueue;
+
+        private VkSemaphore[] _semaphores = [];
+        private VkFence[] _fences = [];
+        private uint _fenceIndex;
         private uint _currentImageIndex;
+        private uint _imageCount;
+
         private readonly SwapchainSource _swapchainSource;
         private readonly bool _colorSrgb;
         private bool _syncToVBlank;
@@ -41,7 +47,6 @@ namespace Veldrid.Vulkan2
         public override bool IsDisposed => RefCount.IsDisposed;
         public VkSwapchainKHR DeviceSwapchain => _deviceSwapchain;
         public uint ImageIndex => _currentImageIndex;
-        public VkFence ImageAvailableFence => _imageAvailableFence;
         public VkSurfaceKHR Surface => _surface;
         public VkQueue PresentQueue => _presentQueue;
         public int PresentQueueIndex => _presentQueueIndex;
@@ -64,23 +69,12 @@ namespace Veldrid.Vulkan2
 
             try
             {
-                VkFenceCreateInfo fenceCI = new()
-                {
-                    sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
-                };
-
-                VkFence imageAvailableFence;
-                vkCreateFence(_gd.Device, &fenceCI, null, &imageAvailableFence);
-                _imageAvailableFence = imageAvailableFence;
-
                 _framebuffer = new(gd, this, description);
 
                 CreateSwapchain(description.Width, description.Height);
 
                 // make sure we pre-emptively acquire the first image for the swapchain
-                AcquireNextImage(_gd.Device, default, imageAvailableFence);
-                vkWaitForFences(_gd.Device, 1, &imageAvailableFence, (VkBool32)true, ulong.MaxValue);
-                vkResetFences(_gd.Device, 1, &imageAvailableFence);
+                _ = AcquireNextImage(_gd.Device);
             }
             catch
             {
@@ -94,9 +88,19 @@ namespace Veldrid.Vulkan2
         {
             _framebuffer?.RefZeroed();
 
-            if (_imageAvailableFence != VkFence.NULL)
+            foreach (var fence in _fences)
             {
-                vkDestroyFence(_gd.Device, _imageAvailableFence, null);
+                if (fence != VkFence.NULL)
+                {
+                    vkDestroyFence(_gd.Device, fence, null);
+                }
+            }
+            foreach (var semaphore in _semaphores)
+            {
+                if (semaphore != VkSemaphore.NULL)
+                {
+                    vkDestroySemaphore(_gd.Device, semaphore, null);
+                }
             }
 
             if (_deviceSwapchain != VkSwapchainKHR.NULL)
@@ -225,6 +229,7 @@ namespace Veldrid.Vulkan2
             }
 
             uint maxImageCount = surfaceCapabilities.maxImageCount == 0 ? uint.MaxValue : surfaceCapabilities.maxImageCount;
+            // TODO: it would maybe be a good idea to enable this to be configurable?
             uint imageCount = Math.Min(maxImageCount, surfaceCapabilities.minImageCount + 1);
 
             uint clampedWidth = Util.Clamp(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
@@ -281,11 +286,59 @@ namespace Veldrid.Vulkan2
                 vkDestroySwapchainKHR(_gd.Device, oldSwapchain, null);
             }
 
+            VulkanUtil.CheckResult(vkGetSwapchainImagesKHR(_gd.Device, deviceSwapchain, &imageCount, null));
+            _imageCount = imageCount;
+
+            // as a last step, we need to set up our fences and semaphores
+            Util.EnsureArrayMinimumSize(ref _fences, imageCount);
+            Util.EnsureArrayMinimumSize(ref _semaphores, imageCount + 1);
+            _fenceIndex = 0;
+
+            for (var i = 0; i < _fences.Length; i++)
+            {
+                if (_fences[i] != VkFence.NULL)
+                {
+                    // we always want to recreate any fences we have, because we want them to be default-signalled
+                    vkDestroyFence(_gd.Device, _fences[i], null);
+                    _fences[i] = VkFence.NULL;
+                }
+
+                if (i < imageCount)
+                {
+                    var fenceCi = new VkFenceCreateInfo()
+                    {
+                        sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                        flags = VkFenceCreateFlags.VK_FENCE_CREATE_SIGNALED_BIT,
+                    };
+                    VkFence fence;
+                    VulkanUtil.CheckResult(vkCreateFence(_gd.Device, &fenceCi, null, &fence));
+                    _fences[i] = fence;
+                }
+            }
+
+            for (var i = 0; i < _semaphores.Length; i++)
+            {
+                if (_semaphores[i] != VkSemaphore.NULL)
+                {
+                    // we always want to recreate any semaphores we have, to make sure they aren't signalled when we do our initial acquire
+                    vkDestroySemaphore(_gd.Device, _semaphores[i], null);
+                    _semaphores[i] = VkSemaphore.NULL;
+                }
+
+                if (i < imageCount + 1)
+                {
+                    var semaphoreCi = new VkSemaphoreCreateInfo() { sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+                    VkSemaphore semaphore;
+                    VulkanUtil.CheckResult(vkCreateSemaphore(_gd.Device, &semaphoreCi, null, &semaphore));
+                    _semaphores[i] = semaphore;
+                }
+            }
+
             _framebuffer.SetNewSwapchain(_deviceSwapchain, width, height, surfaceFormat, swapchainCI.imageExtent);
             return true;
         }
 
-        public unsafe bool AcquireNextImage(VkDevice device, VkSemaphore semaphore, VkFence fence)
+        public unsafe bool AcquireNextImage(VkDevice device)
         {
             if (_newSyncToVBlank != null)
             {
@@ -295,16 +348,33 @@ namespace Veldrid.Vulkan2
                 return false;
             }
 
+            // first, wait for the i - N'th fence (which mod N is just the current fence, and the one we will be passing to acquire)
+            var waitFence = _fences[_fenceIndex];
+            _ = vkWaitForFences(_gd.Device, 1, &waitFence, 1, ulong.MaxValue);
+            _ = vkResetFences(_gd.Device, 1, &waitFence);
+
+            // then, pick up the semaphore we're going to use
+            // we always grab the "extra" one, and we'll swap it into place in the array once we know the image we've acquired
+            // The semaphore we pass in to vkAcquireNextImage MUST be unsignaled (so waited-upon), which we guarantee at the callsites
+            // of AcquireNextImage. (Either because we *just* recreated the swapchain, or because we are doing a presentation, and thus
+            // have a command list that we can force to wait on it.)
+            var semaphore = _semaphores[_imageCount];
+
             uint imageIndex = _currentImageIndex;
             VkResult result = vkAcquireNextImageKHR(
                 device,
                 _deviceSwapchain,
                 ulong.MaxValue,
                 semaphore,
-                fence,
+                waitFence,
                 &imageIndex);
-            _framebuffer.SetImageIndex(imageIndex);
+            _framebuffer.SetImageIndex(imageIndex, semaphore);
             _currentImageIndex = imageIndex;
+            // swap this semaphore into position
+            _semaphores[_imageCount] = _semaphores[imageIndex];
+            _semaphores[imageIndex] = semaphore;
+            // and move our fence index forward
+            _fenceIndex = (_fenceIndex + 1) % _imageCount;
 
             if (result is VkResult.VK_ERROR_OUT_OF_DATE_KHR or VkResult.VK_SUBOPTIMAL_KHR)
             {
@@ -323,12 +393,7 @@ namespace Veldrid.Vulkan2
         {
             if (CreateSwapchain(width, height))
             {
-                var imageAvailableFence = _imageAvailableFence;
-                if (AcquireNextImage(_gd.Device, default, imageAvailableFence))
-                {
-                    vkWaitForFences(_gd.Device, 1, &imageAvailableFence, (VkBool32)true, ulong.MaxValue);
-                    vkResetFences(_gd.Device, 1, &imageAvailableFence);
-                }
+                _ = AcquireNextImage(_gd.Device);
             }
         }
 

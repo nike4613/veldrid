@@ -408,7 +408,7 @@ namespace Veldrid.Vulkan2
                 var result = new VulkanTexture(
                     _gd, in description,
                     image, memoryBlock, buffer,
-                    isSwapchainTexture: false,
+                    parentFramebuffer: null,
                     leaveOpen: false);
                 image = default; // ownership transfer into the new object
                 buffer = default;
@@ -452,7 +452,7 @@ namespace Veldrid.Vulkan2
 
             var result = new VulkanTexture(_gd, description,
                 image, default, default,
-                isSwapchainTexture: false,
+                parentFramebuffer: null,
                 leaveOpen: true);
 
             // we don't know what the initial layout is, so we assume UNDEFINED

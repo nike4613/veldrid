@@ -31,6 +31,7 @@ namespace Veldrid.Vulkan2
         private readonly Stack<StagingResourceInfo> _availableStagingInfo = new();
         private readonly Dictionary<ISynchronizedResource, ResourceSyncInfo> _resourceSyncInfo = new();
         private readonly List<PendingBarrier> _pendingBarriers = new();
+        private readonly Dictionary<VulkanSwapchainFramebuffer, VkPipelineStageFlags> _usedSwapchainFramebuffers = new();
         private int _pendingImageBarriers;
         private int _pendingBufferBarriers;
 
@@ -136,6 +137,14 @@ namespace Veldrid.Vulkan2
 
         void IResourceRefCountTarget.RefZeroed()
         {
+            if (_currentStagingInfo.IsValid)
+            {
+                foreach (var resource in _currentStagingInfo.RefCounts)
+                {
+                    resource.Decrement();
+                }
+            }
+
             vkDestroyCommandPool(Device.Device, _pool, null);
         }
 
@@ -150,7 +159,7 @@ namespace Veldrid.Vulkan2
             public StagingResourceInfo()
             {
                 BuffersUsed = new();
-                TexturesUsed = new List<VulkanTexture>();
+                TexturesUsed = new();
                 RefCounts = new();
             }
 
@@ -333,6 +342,22 @@ namespace Veldrid.Vulkan2
                 _pendingImageBarriers = 0;
                 _pendingBufferBarriers = 0;
 
+                // next, we need to collect the semaphores that we need to care about for swapchain images
+                var semaphoreInfo = ArrayPool<VkSemaphoreSubmitInfo>.Shared.Rent(_usedSwapchainFramebuffers.Count);
+                var numSemaphores = 0;
+                foreach (var (swapchain, stages) in _usedSwapchainFramebuffers)
+                {
+                    var sem = swapchain.UseFramebufferSemaphore();
+                    if (sem == VkSemaphore.NULL) continue;
+                    semaphoreInfo[numSemaphores++] = new()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                        semaphore = sem,
+                        stageMask = (VkPipelineStageFlags2)stages,
+                    };
+                }
+                _usedSwapchainFramebuffers.Clear();
+
                 var syncCmdSubmitInfo = new VkCommandBufferSubmitInfo()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -354,28 +379,33 @@ namespace Veldrid.Vulkan2
                     commandBuffer = cb,
                 };
 
-                Span<VkSubmitInfo2> submitInfos = [
-                    // first, the synchronization command buffer
-                    new()
-                    {
-                        sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        commandBufferInfoCount = 1,
-                        pCommandBufferInfos = &syncCmdSubmitInfo,
-                    },
-                    // then, the main command buffer
-                    new()
-                    {
-                        sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-                        commandBufferInfoCount = 1,
-                        pCommandBufferInfos = &mainCmdSubmitInfo,
-                        signalSemaphoreInfoCount = completionSemaphoreStages != 0 ? 1u : 0u,
-                        pSignalSemaphoreInfos = &mainSemaphoreInfo,
-                    },
-                ];
-
-                fixed (VkSubmitInfo2* pSubmitInfos = submitInfos)
+                fixed (VkSemaphoreSubmitInfo* pSemSubmitInfo = semaphoreInfo)
                 {
-                    VulkanUtil.CheckResult(Device.vkQueueSubmit2(queue, (uint)submitInfos.Length, pSubmitInfos, fence));
+                    Span<VkSubmitInfo2> submitInfos = [
+                        // first, the synchronization command buffer
+                        new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                            commandBufferInfoCount = 1,
+                            pCommandBufferInfos = &syncCmdSubmitInfo,
+                            waitSemaphoreInfoCount = (uint)numSemaphores,
+                            pWaitSemaphoreInfos = pSemSubmitInfo,
+                        },
+                        // then, the main command buffer
+                        new()
+                        {
+                            sType = VkStructureType.VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+                            commandBufferInfoCount = 1,
+                            pCommandBufferInfos = &mainCmdSubmitInfo,
+                            signalSemaphoreInfoCount = completionSemaphoreStages != 0 ? 1u : 0u,
+                            pSignalSemaphoreInfos = &mainSemaphoreInfo,
+                        },
+                    ];
+
+                    fixed (VkSubmitInfo2* pSubmitInfos = submitInfos)
+                    {
+                        VulkanUtil.CheckResult(Device.vkQueueSubmit2(queue, (uint)submitInfos.Length, pSubmitInfos, fence));
+                    }
                 }
             }
 
@@ -535,7 +565,7 @@ namespace Veldrid.Vulkan2
             return result;
         }
 
-        internal static bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, bool transitionFromUnknown, out ResourceBarrierInfo barrier)
+        internal static bool TryBuildSyncBarrier(ref SyncState state, in SyncRequest req, bool transitionFromUnknown, out ResourceBarrierInfo barrier, out bool isWrite)
         {
             const VkAccessFlags AllWriteAccesses =
                 VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
@@ -562,6 +592,7 @@ namespace Veldrid.Vulkan2
             var needsLayoutTransition = req.Layout != 0 && (transitionFromUnknown || state.CurrentImageLayout != 0) && req.Layout != state.CurrentImageLayout;
             var writeAccesses = requestAccess & AllWriteAccesses;
             var needsWrite = writeAccesses != 0 || needsLayoutTransition;
+            isWrite = needsWrite;
 
             barrier = new();
             if (!needsWrite)
@@ -844,6 +875,7 @@ namespace Veldrid.Vulkan2
             }
 
             var needsAnyBarrier = false;
+            var anyWrites = false;
 
             for (var i = 0; i < subresources.NumLayers; i++)
             {
@@ -857,11 +889,12 @@ namespace Veldrid.Vulkan2
                     ref var localSyncInfo = ref resourceSyncInfo.GetSyncInfo(subresource);
 
                     // when building barriers here, don't transition from UNKNOWN layout, because that indicates something that should go in the Expected layout
-                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, transitionFromUnknown: false, out var barrier))
+                    if (TryBuildSyncBarrier(ref localSyncInfo.LocalState, in req, transitionFromUnknown: false, out var barrier, out var isWrite))
                     {
                         // a barrier is needed for this subresource, mark it and try to update in local info
                         localSyncInfo.HasBarrier = true;
                         needsAnyBarrier = true;
+                        anyWrites |= isWrite;
                         EnqueueBarrier(resource, singleSubresourceRange, barrier, resourceIsImage);
                     }
 
@@ -879,6 +912,11 @@ namespace Veldrid.Vulkan2
                 }
             }
 
+            if (anyWrites && resource is VulkanTexture { ParentFramebuffer: { } swfb })
+            {
+                UseSwapchainFramebuffer(swfb, req.BarrierMasks.StageMask);
+            }
+
             return needsAnyBarrier;
         }
 
@@ -894,6 +932,9 @@ namespace Veldrid.Vulkan2
             {
                 var res = info.Resource;
 
+                var anyWrites = false;
+                var writeStageMasks = VkPipelineStageFlags.VK_PIPELINE_STAGE_NONE;
+
                 // NOTE: this SHOULD be kept in sync with the above, if it needs any changes.
                 for (var layer = 0u; layer < info.SubresourceCounts.Layer; layer++)
                 {
@@ -905,8 +946,10 @@ namespace Veldrid.Vulkan2
                         ref var targetState = ref res.SyncStateForSubresource(subresource);
 
                         // when building barriers here, transition from UNKNOWN layout, because this is our last chance
-                        if (TryBuildSyncBarrier(ref targetState, in localState.Expected, transitionFromUnknown: true, out var barrier))
+                        if (TryBuildSyncBarrier(ref targetState, in localState.Expected, transitionFromUnknown: true, out var barrier, out var isWrite))
                         {
+                            anyWrites |= isWrite;
+                            writeStageMasks |= localState.Expected.BarrierMasks.StageMask;
                             EnqueueBarrier(res, singleSubresourceRange, barrier, info.IsImage);
                         }
 
@@ -925,6 +968,11 @@ namespace Veldrid.Vulkan2
                             targetState.PerStageReaders |= localState.LocalState.PerStageReaders;
                         }
                     }
+                }
+
+                if (anyWrites && res is VulkanTexture { ParentFramebuffer: { } swfb })
+                {
+                    UseSwapchainFramebuffer(swfb, writeStageMasks);
                 }
 
                 info.Clear();
@@ -1165,6 +1213,12 @@ namespace Veldrid.Vulkan2
             ArrayPool<VkBufferMemoryBarrier>.Shared.Return(bufBarriers);
         }
 
+        internal void UseSwapchainFramebuffer(VulkanSwapchainFramebuffer framebuffer, VkPipelineStageFlags stages)
+        {
+            ref var usedStages = ref CollectionsMarshal.GetValueRefOrAddDefault(_usedSwapchainFramebuffers, framebuffer, out _);
+            usedStages |= stages;
+        }
+
         [DoesNotReturn]
         private static void ThrowUnreachableStateException()
         {
@@ -1202,6 +1256,7 @@ namespace Veldrid.Vulkan2
                 _pendingBufferBarriers = 0;
                 _pendingBarriers.Clear();
                 _resourceSyncInfo.Clear();
+                _usedSwapchainFramebuffers.Clear();
 
                 // We always want to pre-allocate BOTH our main command buffer AND our sync command buffer
                 Span<VkCommandBuffer> requestedBuffers = [default, default];

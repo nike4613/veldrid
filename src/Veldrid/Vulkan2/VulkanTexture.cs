@@ -15,18 +15,19 @@ using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Veldrid.Vulkan2
 {
     internal unsafe sealed class VulkanTexture : Texture, IResourceRefCountTarget, ISynchronizedResource
     {
         private readonly VulkanGraphicsDevice _gd;
+        private readonly VulkanSwapchainFramebuffer? _parentFramebuffer;
         private readonly VkImage _image;
         private readonly VkBuffer _stagingBuffer;
         private readonly VkMemoryBlock _memory;
         private string? _name;
         private readonly uint _actualImageArrayLayers;
-        private readonly bool _isSwapchainTexture;
         private readonly bool _leaveOpen;
 
         public VkFormat VkFormat { get; }
@@ -46,19 +47,21 @@ namespace Veldrid.Vulkan2
         public VkMemoryBlock Memory => _memory;
 
         public uint ActualArrayLayers => _actualImageArrayLayers;
-        public bool IsSwapchainImage => _isSwapchainTexture;
+        [MemberNotNullWhen(true, nameof(_parentFramebuffer))]
+        public bool IsSwapchainImage => _parentFramebuffer is not null;
+        public VulkanSwapchainFramebuffer? ParentFramebuffer => _parentFramebuffer;
 
 
         internal VulkanTexture(
             VulkanGraphicsDevice gd, in TextureDescription description,
             VkImage image, VkMemoryBlock memory, VkBuffer stagingBuffer,
-            bool isSwapchainTexture, bool leaveOpen)
+            VulkanSwapchainFramebuffer? parentFramebuffer, bool leaveOpen)
         {
             _gd = gd;
             _image = image;
             _memory = memory;
             _stagingBuffer = stagingBuffer;
-            _isSwapchainTexture = isSwapchainTexture;
+            _parentFramebuffer = parentFramebuffer;
             _leaveOpen = leaveOpen;
 
             Width = description.Width;
@@ -105,7 +108,7 @@ namespace Veldrid.Vulkan2
                 vkDestroyBuffer(_gd.Device, _stagingBuffer, null);
             }
 
-            if (_image != VkImage.NULL && !_isSwapchainTexture)
+            if (_image != VkImage.NULL && !IsSwapchainImage)
             {
                 vkDestroyImage(_gd.Device, _image, null);
             }

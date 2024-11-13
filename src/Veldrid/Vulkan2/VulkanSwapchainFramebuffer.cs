@@ -1,8 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
@@ -29,6 +25,9 @@ namespace Veldrid.Vulkan2
         private VkImage[] _images = [];
         private VkFormat _imageFormat;
         private VkExtent2D _extent;
+        private VkSemaphore _presentSemaphore;
+
+        private uint _imageCount;
 
         // this doesn't directly represent a resource
         public override string? Name { get; set; }
@@ -57,15 +56,27 @@ namespace Veldrid.Vulkan2
         // Dispose() here is a NOP because a SwapchainFramebuffer is tightly tied to a Swapchain for lifetime, so that's the managed one
         public override void Dispose() { }
 
-        internal void RefZeroed()
+        internal unsafe void RefZeroed()
         {
             DestroySwapchainFramebuffers();
         }
 
-        internal void SetImageIndex(uint index)
+        internal void SetImageIndex(uint index, VkSemaphore presentSemaphore)
         {
             _currentImageIndex = index;
             _colorTargets = _framebuffers[index].ColorTargetsArray;
+            _presentSemaphore = presentSemaphore;
+        }
+
+        // this will be called when about to submit a command buffer, and we MUST use this semaphore EXACTLY ONCE.
+        public VkSemaphore UseFramebufferSemaphore()
+        {
+            lock (this)
+            {
+                var sem = _presentSemaphore;
+                _presentSemaphore = VkSemaphore.NULL;
+                return sem;
+            }
         }
 
         internal unsafe void SetNewSwapchain(
@@ -90,6 +101,7 @@ namespace Veldrid.Vulkan2
                 VulkanUtil.CheckResult(vkGetSwapchainImagesKHR(_gd.Device, deviceSwapchain, &imageCount, pImages));
             }
 
+            _imageCount = imageCount;
             _imageFormat = surfaceFormat.format;
             _extent = swapchainExtent;
 
@@ -98,21 +110,34 @@ namespace Veldrid.Vulkan2
             OutputDescription = OutputDescription.CreateFromFramebuffer(this);
         }
         
-        private void CreateFramebuffers()
+        private unsafe void CreateFramebuffers()
         {
             DestroySwapchainFramebuffers();
 
             CreateDepthTexture();
 
-            Util.EnsureArrayMinimumSize(ref _framebuffers, (uint)_images.Length);
+            Util.EnsureArrayMinimumSize(ref _framebuffers, _imageCount);
+
+            var semaphoreCreateInfo = new VkSemaphoreCreateInfo()
+            {
+                sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                flags = 0,
+            };
+
+            var fenceCreateInfo = new VkFenceCreateInfo()
+            {
+                sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                flags = 0,
+            };
 
             for (uint i = 0; i < _images.Length; i++)
             {
+                // create the VulkanTexture and framebuffer
                 var tex = new VulkanTexture(_gd,
                     TextureDescription.Texture2D(
                         uint.Max(1, _extent.width), uint.Max(1, _extent.height), mipLevels: 1, arrayLayers: 1,
                         VkFormats.VkToVdPixelFormat(_imageFormat), TextureUsage.RenderTarget),
-                    _images[i], default, default, isSwapchainTexture: true, leaveOpen: true);
+                    _images[i], default, default, parentFramebuffer: this, leaveOpen: true);
                 // textures start out in the undefined format, which corresponds to the default value of the layout field.
                 tex.AllSyncStates.Fill(default);
 
@@ -120,7 +145,7 @@ namespace Veldrid.Vulkan2
                 _framebuffers[i] = _gd.ResourceFactory.CreateFramebuffer(desc);
             }
 
-            SetImageIndex(0);
+            SetImageIndex(0, default);
         }
 
         private void CreateDepthTexture()
@@ -140,7 +165,7 @@ namespace Veldrid.Vulkan2
             }
         }
 
-        private void DestroySwapchainFramebuffers()
+        private unsafe void DestroySwapchainFramebuffers()
         {
             _depthTarget?.Target.Dispose();
             _depthTarget = default;

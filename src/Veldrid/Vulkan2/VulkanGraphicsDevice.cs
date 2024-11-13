@@ -977,7 +977,7 @@ namespace Veldrid.Vulkan2
                     {
                         ref var syncInfo = ref syncResource.SyncStateForSubresource(new(syncSubresource.BaseLayer, syncSubresource.BaseMip));
                         var syncInfoCopy = syncInfo;
-                        needSyncOrLayoutTransition = VulkanCommandList.TryBuildSyncBarrier(ref syncInfoCopy, syncRequest, transitionFromUnknown: true, out _);
+                        needSyncOrLayoutTransition = VulkanCommandList.TryBuildSyncBarrier(ref syncInfoCopy, syncRequest, transitionFromUnknown: true, out _, out _);
                         if (!needSyncOrLayoutTransition)
                         {
                             // we don't need to do an explicit sync, actually update the sync info
@@ -1167,6 +1167,7 @@ namespace Veldrid.Vulkan2
 
             // transition all swapchain images into PRESENT_SRC layout
             var cl = GetAndBeginCommandList();
+            cl.UseSwapchainFramebuffer(vkSwapchain.Framebuffer, VkPipelineStageFlags.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
             foreach (ref var colorTarget in vkSwapchain.Framebuffer.CurrentFramebuffer.ColorTargetsArray.AsSpan())
             {
                 var tex = Util.AssertSubtype<Texture, VulkanTexture>(colorTarget.Target);
@@ -1183,12 +1184,15 @@ namespace Veldrid.Vulkan2
             // note: synchro affects things in submission order, so we don't need to semaphore-wait
             EndAndSubmitCommands(cl);
 
+            var waitSemaphore = vkSwapchain.Framebuffer.UseFramebufferSemaphore();
             var presentInfo = new VkPresentInfoKHR()
             {
                 sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                 swapchainCount = 1,
                 pSwapchains = &deviceSwapchain,
                 pImageIndices = &imageIndex,
+                waitSemaphoreCount = waitSemaphore != VkSemaphore.NULL ? 1u : 0u,
+                pWaitSemaphores = &waitSemaphore,
             };
 
             var presentLock = vkSwapchain.PresentQueueIndex == _deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx ? QueueLock : vkSwapchain.PresentLock;
@@ -1204,13 +1208,7 @@ namespace Veldrid.Vulkan2
                     VulkanUtil.ThrowResult(presentResult);
                 }
 
-                VkFence fence = vkSwapchain.ImageAvailableFence;
-                if (vkSwapchain.AcquireNextImage(Device, VkSemaphore.NULL, fence))
-                {
-                    VulkanUtil.CheckResult(vkWaitForFences(Device, 1, &fence, (VkBool32)true, ulong.MaxValue));
-
-                    VulkanUtil.CheckResult(vkResetFences(Device, 1, &fence));
-                }
+                _ = vkSwapchain.AcquireNextImage(Device);
             }
         }
     }
