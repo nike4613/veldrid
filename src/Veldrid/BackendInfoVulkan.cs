@@ -1,8 +1,10 @@
 ﻿#if !EXCLUDE_VULKAN_BACKEND
 using System;
 using System.Collections.ObjectModel;
-using TerraFX.Interop.Vulkan;
+using System.Threading;
 using Veldrid.Vulkan;
+using TerraFX.Interop.Vulkan;
+using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid
 {
@@ -13,12 +15,12 @@ namespace Veldrid
     /// </summary>
     public unsafe class BackendInfoVulkan
     {
-        private readonly VkGraphicsDevice _gd;
+        private readonly VulkanGraphicsDevice _gd;
         private readonly ReadOnlyCollection<string> _instanceLayers;
         private readonly ReadOnlyCollection<string> _instanceExtensions;
         private readonly Lazy<ReadOnlyCollection<ExtensionProperties>> _deviceExtensions;
 
-        internal BackendInfoVulkan(VkGraphicsDevice gd)
+        internal BackendInfoVulkan(VulkanGraphicsDevice gd)
         {
             _gd = gd;
             _instanceLayers = new ReadOnlyCollection<string>(VulkanUtil.EnumerateInstanceLayers());
@@ -29,7 +31,7 @@ namespace Veldrid
         /// <summary>
         /// Gets the underlying VkInstance used by the GraphicsDevice.
         /// </summary>
-        public IntPtr Instance => (IntPtr)_gd.Instance.Value;
+        public IntPtr Instance => (IntPtr)_gd._deviceCreateState.Instance.Value;
 
         /// <summary>
         /// Gets the underlying VkDevice used by the GraphicsDevice.
@@ -39,17 +41,17 @@ namespace Veldrid
         /// <summary>
         /// Gets the underlying VkPhysicalDevice used by the GraphicsDevice.
         /// </summary>
-        public IntPtr PhysicalDevice => (IntPtr)_gd.PhysicalDevice.Value;
+        public IntPtr PhysicalDevice => (IntPtr)_gd._deviceCreateState.PhysicalDevice.Value;
 
         /// <summary>
         /// Gets the VkQueue which is used by the GraphicsDevice to submit graphics work.
         /// </summary>
-        public IntPtr GraphicsQueue => (IntPtr)_gd.GraphicsQueue.Value;
+        public IntPtr GraphicsQueue => (IntPtr)_gd._deviceCreateState.MainQueue.Value;
 
         /// <summary>
         /// Gets the queue family index of the graphics VkQueue.
         /// </summary>
-        public uint GraphicsQueueFamilyIndex => _gd.GraphicsQueueIndex;
+        public uint GraphicsQueueFamilyIndex => (uint)_gd._deviceCreateState.QueueFamilyInfo.MainGraphicsFamilyIdx;
 
         /// <summary>
         /// Gets the driver name of the device. May be null.
@@ -75,14 +77,8 @@ namespace Veldrid
         /// <param name="layout">The new VkImageLayout value.</param>
         public void OverrideImageLayout(Texture texture, uint layout)
         {
-            VkTexture vkTex = Util.AssertSubtype<Texture, VkTexture>(texture);
-            for (uint layer = 0; layer < vkTex.ArrayLayers; layer++)
-            {
-                for (uint level = 0; level < vkTex.MipLevels; level++)
-                {
-                    vkTex.SetImageLayout(level, layer, (VkImageLayout)layout);
-                }
-            }
+            var vkTex = Util.AssertSubtype<Texture, VulkanTexture>(texture);
+            vkTex.AllSyncStates.Fill(new() { CurrentImageLayout = (VkImageLayout)layout });
         }
 
         /// <summary>
@@ -93,7 +89,7 @@ namespace Veldrid
         /// <returns>The underlying VkImage for the given Texture.</returns>
         public ulong GetVkImage(Texture texture)
         {
-            VkTexture vkTexture = Util.AssertSubtype<Texture, VkTexture>(texture);
+            var vkTexture = Util.AssertSubtype<Texture, VulkanTexture>(texture);
             if ((vkTexture.Usage & TextureUsage.Staging) != 0)
             {
                 throw new VeldridException(
@@ -101,7 +97,7 @@ namespace Veldrid
                     $"has {nameof(TextureUsage)}.{nameof(TextureUsage.Staging)}.");
             }
 
-            return vkTexture.OptimalDeviceImage.Value;
+            return vkTexture.DeviceImage.Value;
         }
 
         /// <summary>
@@ -112,28 +108,51 @@ namespace Veldrid
         /// <param name="layout">The new VkImageLayout value.</param>
         public void TransitionImageLayout(CommandList commandList, Texture texture, uint layout)
         {
-            VkCommandList vkCL = Util.AssertSubtype<CommandList, VkCommandList>(commandList);
-            vkCL.TransitionImageLayout(Util.AssertSubtype<Texture, VkTexture>(texture), (VkImageLayout)layout);
+            var vkCL = Util.AssertSubtype<CommandList, VulkanCommandList>(commandList);
+            var vkTex = Util.AssertSubtype<Texture, VulkanTexture>(texture);
+
+            vkCL.SyncResource(vkTex, new()
+            {
+                Layout = (VkImageLayout)layout
+            });
         }
 
         /// <inheritdoc cref="TransitionImageLayout(CommandList, Texture, uint)"/>
         [Obsolete("Prefer using the overload taking a CommandList for proper synchronization.")]
         public void TransitionImageLayout(Texture texture, uint layout)
         {
-            VkCommandList cl = _gd.GetAndBeginCommandList();
-            cl.TransitionImageLayout(Util.AssertSubtype<Texture, VkTexture>(texture), (VkImageLayout)layout);
-            _gd.EndAndSubmitCommands(cl);
+            var vkTex = Util.AssertSubtype<Texture, VulkanTexture>(texture);
+            var cl = _gd.GetAndBeginCommandList();
+            cl.SyncResource(vkTex, new()
+            {
+                Layout = (VkImageLayout)layout
+            });
+            var (_, fence) = _gd.EndAndSubmitCommands(cl);
+            _ = vkWaitForFences(_gd.Device, 1, &fence, 1, ulong.MaxValue);
+            _gd.CheckFencesForCompletion();
         }
 
         public VkFormat GetVkFormat(Texture texture)
         {
-            VkTexture vkTexture = Util.AssertSubtype<Texture, VkTexture>(texture);
+            var vkTexture = Util.AssertSubtype<Texture, VulkanTexture>(texture);
             return vkTexture.VkFormat;
+        }
+
+        public void CheckForCommandListCompletions()
+        {
+            _gd.CheckFencesForCompletion();
         }
 
         private unsafe ReadOnlyCollection<ExtensionProperties> EnumerateDeviceExtensions()
         {
-            VkExtensionProperties[] vkProps = _gd.GetDeviceExtensionProperties();
+            uint propertyCount = 0;
+            VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(_gd._deviceCreateState.PhysicalDevice, (sbyte*)null, &propertyCount, null));
+            VkExtensionProperties[] vkProps = new VkExtensionProperties[(int)propertyCount];
+            fixed (VkExtensionProperties* properties = vkProps)
+            {
+                VulkanUtil.CheckResult(vkEnumerateDeviceExtensionProperties(_gd._deviceCreateState.PhysicalDevice, (sbyte*)null, &propertyCount, properties));
+            }
+
             ExtensionProperties[] veldridProps = new ExtensionProperties[vkProps.Length];
 
             for (int i = 0; i < vkProps.Length; i++)

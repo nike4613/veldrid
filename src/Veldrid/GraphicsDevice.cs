@@ -1192,7 +1192,7 @@ namespace Veldrid
 
                 case GraphicsBackend.Vulkan:
 #if !EXCLUDE_VULKAN_BACKEND
-                    return VkGraphicsDevice.IsSupported();
+                    return VulkanGraphicsDevice.IsSupported();
 #else
                     return false;
 #endif
@@ -1327,11 +1327,7 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options)
         {
-#if NEW_VK
-            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, null);
-#else
-            return new VkGraphicsDevice(options, null);
-#endif
+            return VulkanGraphicsDevice.CreateDevice(options, default, null);
         }
 
         /// <summary>
@@ -1342,11 +1338,7 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options, VulkanDeviceOptions vkOptions)
         {
-#if NEW_VK
-            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, vkOptions, null);
-#else
-            return new VkGraphicsDevice(options, null, vkOptions);
-#endif
+            return VulkanGraphicsDevice.CreateDevice(options, vkOptions, null);
         }
 
         /// <summary>
@@ -1357,11 +1349,7 @@ namespace Veldrid
         /// <returns>A new <see cref="GraphicsDevice"/> using the Vulkan API.</returns>
         public static GraphicsDevice CreateVulkan(GraphicsDeviceOptions options, SwapchainDescription swapchainDescription)
         {
-#if NEW_VK
-            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, swapchainDescription);
-#else
-            return new VkGraphicsDevice(options, swapchainDescription);
-#endif
+            return VulkanGraphicsDevice.CreateDevice(options, default, swapchainDescription);
         }
 
         /// <summary>
@@ -1376,11 +1364,7 @@ namespace Veldrid
             SwapchainDescription swapchainDescription,
             VulkanDeviceOptions vkOptions)
         {
-#if NEW_VK
-            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, vkOptions, swapchainDescription);
-#else
-            return new VkGraphicsDevice(options, swapchainDescription, vkOptions);
-#endif
+            return VulkanGraphicsDevice.CreateDevice(options, vkOptions, swapchainDescription);
         }
 
         /// <summary>
@@ -1400,11 +1384,7 @@ namespace Veldrid
                 options.SyncToVerticalBlank,
                 options.SwapchainSrgbFormat);
 
-#if NEW_VK
-            return Vulkan2.VulkanGraphicsDevice.CreateDevice(options, default, scDesc);
-#else
-            return new VkGraphicsDevice(options, scDesc);
-#endif
+            return VulkanGraphicsDevice.CreateDevice(options, default, scDesc);
         }
 #endif
 
