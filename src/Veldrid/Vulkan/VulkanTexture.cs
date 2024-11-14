@@ -1,19 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
-using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
 using System.Diagnostics.CodeAnalysis;
 

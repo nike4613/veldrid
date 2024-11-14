@@ -1,16 +1,10 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using TerraFX.Interop.Vulkan;
 
 using static TerraFX.Interop.Vulkan.Vulkan;
-using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 
 namespace Veldrid.Vulkan
 {

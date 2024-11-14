@@ -2,13 +2,6 @@
 using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
 

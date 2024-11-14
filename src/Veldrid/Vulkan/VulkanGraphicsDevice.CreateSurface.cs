@@ -1,18 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using Veldrid.Android;
 using Veldrid.MetalBindings;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using CommonStrings = Veldrid.Vulkan.CommonStrings;
-using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 using static TerraFX.Interop.Vulkan.VkStructureType;
-using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan
 {

@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using TerraFX.Interop.Vulkan;
+﻿using TerraFX.Interop.Vulkan;
 using static TerraFX.Interop.Vulkan.VkFormat;
 
 namespace Veldrid.Vulkan

@@ -5,10 +5,6 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using CommonStrings = Veldrid.Vulkan.CommonStrings;
-using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
 

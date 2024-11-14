@@ -1,6 +1,3 @@
-using System;
-using Veldrid.MetalBindings;
-
 namespace Veldrid.MTL
 {
     internal sealed class MTLResourceFactory : ResourceFactory

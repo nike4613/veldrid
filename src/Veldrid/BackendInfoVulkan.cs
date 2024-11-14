@@ -1,7 +1,6 @@
 ﻿#if !EXCLUDE_VULKAN_BACKEND
 using System;
 using System.Collections.ObjectModel;
-using System.Threading;
 using Veldrid.Vulkan;
 using TerraFX.Interop.Vulkan;
 using static TerraFX.Interop.Vulkan.Vulkan;

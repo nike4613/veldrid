@@ -1,18 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Diagnostics;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
 using StackListNI = Veldrid.Vulkan.StackList<System.IntPtr>;
-using CommonStrings = Veldrid.Vulkan.CommonStrings;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
-using System.Numerics;
 
 namespace Veldrid.Vulkan
 {

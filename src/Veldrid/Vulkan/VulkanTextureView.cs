@@ -1,9 +1,4 @@
 ﻿using TerraFX.Interop.Vulkan;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan

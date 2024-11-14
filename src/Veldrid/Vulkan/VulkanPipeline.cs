@@ -1,16 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 using TerraFX.Interop.Vulkan;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan

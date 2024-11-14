@@ -1,6 +1,4 @@
-﻿using System.Diagnostics;
-
-namespace Veldrid
+﻿namespace Veldrid
 {
     internal static class HashHelper
     {

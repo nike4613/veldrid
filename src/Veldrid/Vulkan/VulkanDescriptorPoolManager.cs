@@ -1,8 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Diagnostics;
 using TerraFX.Interop.Vulkan;
-using DescriptorResourceCounts = Veldrid.Vulkan.DescriptorResourceCounts;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan

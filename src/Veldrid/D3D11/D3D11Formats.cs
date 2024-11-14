@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 

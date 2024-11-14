@@ -1,5 +1,4 @@
 ﻿using TerraFX.Interop.Vulkan;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan

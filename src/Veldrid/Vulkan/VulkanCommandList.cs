@@ -7,9 +7,6 @@ using System.Buffers;
 using System.Runtime.CompilerServices;
 
 using TerraFX.Interop.Vulkan;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan

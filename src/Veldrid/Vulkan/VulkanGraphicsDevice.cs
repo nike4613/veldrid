@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
@@ -11,15 +8,8 @@ using System.Runtime.InteropServices;
 using System.Threading;
 
 using TerraFX.Interop.Vulkan;
-using VkVersion = Veldrid.Vulkan.VkVersion;
-using VulkanUtil = Veldrid.Vulkan.VulkanUtil;
-using VkFormats = Veldrid.Vulkan.VkFormats;
-using VkMemoryBlock = Veldrid.Vulkan.VkMemoryBlock;
-using FixedUtf8String = Veldrid.Vulkan.FixedUtf8String;
-using VkDeviceMemoryManager = Veldrid.Vulkan.VkDeviceMemoryManager;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
-using Vortice.Direct3D11;
 
 namespace Veldrid.Vulkan
 {

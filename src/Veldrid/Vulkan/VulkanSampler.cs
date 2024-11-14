@@ -1,6 +1,4 @@
 ﻿using TerraFX.Interop.Vulkan;
-using IResourceRefCountTarget = Veldrid.Vulkan.IResourceRefCountTarget;
-using ResourceRefCount = Veldrid.Vulkan.ResourceRefCount;
 using static TerraFX.Interop.Vulkan.Vulkan;
 
 namespace Veldrid.Vulkan
