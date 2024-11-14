@@ -4,6 +4,7 @@ using System.Diagnostics;
 using TerraFX.Interop.Vulkan;
 using static TerraFX.Interop.Vulkan.Vulkan;
 using System.Diagnostics.CodeAnalysis;
+using System.Collections.Generic;
 
 namespace Veldrid.Vulkan
 {
@@ -110,7 +111,7 @@ namespace Veldrid.Vulkan
             if (_image != VkImage.NULL)
             {
                 // remove this image from the mapping
-                _ = _gd.NativeToManagedImages.Remove(_image, out _);
+                _ = _gd.NativeToManagedImages.TryRemove(_image, out _);
             }
 #endif
         }

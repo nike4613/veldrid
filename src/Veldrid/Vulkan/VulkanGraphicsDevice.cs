@@ -21,6 +21,7 @@ namespace Veldrid.Vulkan
         private readonly VkDeviceMemoryManager _memoryManager;
         private readonly VulkanDescriptorPoolManager _descriptorPoolManager;
         private readonly ConcurrentDictionary<VkFormat, VkFilter> _filters = new();
+        internal readonly ConcurrentDictionary<RenderPassCacheKey, VulkanRenderPassHolder> _renderPasses = new();
         internal readonly object QueueLock = new();
 
         public VkDeviceMemoryManager MemoryManager => _memoryManager;
@@ -252,6 +253,11 @@ namespace Veldrid.Vulkan
 
             // TODO: destroy all other associated information
             MainSwapchain?.Dispose();
+
+            foreach (var rpi in _renderPasses.Values)
+            {
+                rpi.DecRef();
+            }
 
             var dcs = _deviceCreateState;
 

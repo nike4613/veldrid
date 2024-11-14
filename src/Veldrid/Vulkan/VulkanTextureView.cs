@@ -15,6 +15,9 @@ namespace Veldrid.Vulkan
         public ResourceRefCount RefCount { get; }
         public override bool IsDisposed => RefCount.IsDisposed;
 
+        public uint RealArrayLayers
+            => (Target.Usage & TextureUsage.Cubemap) != 0 ? ArrayLayers * 6 : ArrayLayers;
+
         internal VulkanTextureView(VulkanGraphicsDevice gd, in TextureViewDescription description, VkImageView imageView) : base(description)
         {
             _gd = gd;

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using TerraFX.Interop.Vulkan;
 
@@ -533,16 +534,164 @@ namespace Veldrid.Vulkan
             }
             else
             {
-                throw new NotImplementedException();
+                return CreateRenderPassFramebuffer(description);
             }
         }
 
         private unsafe VulkanDynamicFramebuffer CreateDynamicFramebuffer(in FramebufferDescription description)
         {
-            VkImageView imageView = default;
             VulkanTextureView? depthTarget = null;
             VulkanTextureView[]? colorTargets = null;
 
+            try
+            {
+                CreateFramebufferTextureViews(description, ref depthTarget, ref colorTargets);
+
+                var result = new VulkanDynamicFramebuffer(_gd, description, depthTarget, colorTargets ?? []);
+                depthTarget = null; // ownership transfer
+                colorTargets = null;
+
+                return result;
+            }
+            finally
+            {
+                if (depthTarget is not null)
+                {
+                    depthTarget.Dispose();
+                }
+
+                if (colorTargets is not null)
+                {
+                    foreach (var target in colorTargets)
+                    {
+                        if (target is not null)
+                        {
+                            target.Dispose();
+                        }
+                    }
+                }
+            }
+        }
+
+        private unsafe VulkanRenderPassFramebuffer CreateRenderPassFramebuffer(in FramebufferDescription description)
+        {
+            VkFramebuffer framebuffer = default;
+            VulkanRenderPassHolder? rpHolder = null;
+            VulkanTextureView? depthTarget = null;
+            VulkanTextureView[]? colorTargets = null;
+
+            try
+            {
+                // first, we want to create the render passes based on the textures
+                var colorTargetDescs = description.ColorTargets.AsSpan();
+
+                CreateFramebufferTextureViews(description, ref depthTarget, ref colorTargets);
+
+                var totalAttCount = colorTargetDescs.Length;
+                var rpAttInfo = ArrayPool<RenderPassAttachmentInfo>.Shared.Rent(colorTargetDescs.Length + 1); // + 1 for depth
+                var fbTexViews = ArrayPool<VkImageView>.Shared.Rent(colorTargetDescs.Length + 1);
+
+                for (var i = 0; i < colorTargetDescs.Length; i++)
+                {
+                    var targetInfo = colorTargetDescs[i];
+                    var targetTex = Util.AssertSubtype<Texture, VulkanTexture>(targetInfo.Target);
+
+                    rpAttInfo[i] = new(targetTex.VkFormat, targetTex.VkSampleCount,
+                        (targetTex.Usage & TextureUsage.Sampled) != 0, FormatHelpers.IsStencilFormat(targetTex.Format));
+                    fbTexViews[i] = colorTargets![i].ImageView;
+                }
+
+                if (description.DepthTarget is { } depthTargetDesc)
+                {
+                    var targetTex = Util.AssertSubtype<Texture, VulkanTexture>(depthTargetDesc.Target);
+
+                    rpAttInfo[colorTargetDescs.Length] = new(targetTex.VkFormat, targetTex.VkSampleCount,
+                        (targetTex.Usage & TextureUsage.Sampled) != 0, FormatHelpers.IsStencilFormat(targetTex.Format));
+                    fbTexViews[colorTargetDescs.Length] = depthTarget!.ImageView;
+                    totalAttCount++;
+                }
+
+                // get the render passes for this framebuffer
+                rpHolder = VulkanRenderPassHolder.GetRenderPassHolder(_gd, new(rpAttInfo.AsMemory(0, totalAttCount), description.DepthTarget.HasValue));
+
+                fixed (VkImageView* pTexViews = fbTexViews)
+                {
+                    Texture dimTex;
+                    uint mipLevel;
+                    if (colorTargetDescs.Length > 0)
+                    {
+                        dimTex = colorTargetDescs[0].Target;
+                        mipLevel = colorTargetDescs[0].MipLevel;
+                    }
+                    else
+                    {
+                        Debug.Assert(description.DepthTarget != null);
+                        dimTex = description.DepthTarget.Value.Target;
+                        mipLevel = description.DepthTarget.Value.MipLevel;
+                    }
+
+                    Util.GetMipDimensions(
+                        dimTex,
+                        mipLevel,
+                        out uint mipWidth,
+                        out uint mipHeight);
+
+                    // create the actual FBO
+                    var fbCreateInfo = new VkFramebufferCreateInfo()
+                    {
+                        sType = VkStructureType.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                        width = mipWidth,
+                        height = mipHeight,
+                        attachmentCount = (uint)totalAttCount,
+                        pAttachments = pTexViews,
+                        layers = 1,
+                        renderPass = rpHolder.LoadOpDontCare,
+                    };
+                    VulkanUtil.CheckResult(vkCreateFramebuffer(_gd.Device, &fbCreateInfo, null, &framebuffer));
+                }
+
+                // create result object
+                var result = new VulkanRenderPassFramebuffer(_gd, description, framebuffer, rpHolder, colorTargets, depthTarget);
+                depthTarget = null; // ownership transfer
+                colorTargets = null;
+                rpHolder = null;
+                framebuffer = default;
+
+                ArrayPool<RenderPassAttachmentInfo>.Shared.Return(rpAttInfo);
+                ArrayPool<VkImageView>.Shared.Return(fbTexViews);
+
+                return result;
+            }
+            finally
+            {
+                if (framebuffer != VkFramebuffer.NULL)
+                {
+                    vkDestroyFramebuffer(_gd.Device, framebuffer, null);
+                }
+
+                rpHolder?.DecRef();
+
+                if (depthTarget is not null)
+                {
+                    depthTarget.Dispose();
+                }
+
+                if (colorTargets is not null)
+                {
+                    foreach (var target in colorTargets)
+                    {
+                        if (target is not null)
+                        {
+                            target.Dispose();
+                        }
+                    }
+                }
+            }
+        }
+
+        private unsafe void CreateFramebufferTextureViews(in FramebufferDescription description, ref VulkanTextureView? depthTarget, ref VulkanTextureView[]? colorTargets)
+        {
+            VkImageView imageView = default;
             try
             {
                 if (description.ColorTargets is not null)
@@ -607,34 +756,12 @@ namespace Veldrid.Vulkan
                         imageView);
                     imageView = default;
                 }
-
-                var result = new VulkanDynamicFramebuffer(_gd, description, depthTarget, colorTargets ?? []);
-                depthTarget = null; // ownership transfer
-                colorTargets = null;
-
-                return result;
             }
             finally
             {
                 if (imageView != VkImageView.NULL)
                 {
                     vkDestroyImageView(_gd.Device, imageView, null);
-                }
-
-                if (depthTarget is not null)
-                {
-                    depthTarget.Dispose();
-                }
-
-                if (colorTargets is not null)
-                {
-                    foreach (var target in colorTargets)
-                    {
-                        if (target is not null)
-                        {
-                            target.Dispose();
-                        }
-                    }
                 }
             }
         }
@@ -1020,7 +1147,7 @@ namespace Veldrid.Vulkan
 
             VkPipeline pipeline = default;
             VkPipelineLayout pipelineLayout = default;
-            VkRenderPass renderPassTemplate = default;
+            VulkanRenderPassHolder? rpHolder = null;
 
             try
             {
@@ -1090,104 +1217,35 @@ namespace Veldrid.Vulkan
                 else
                 {
                     // Fake Render Pass (for compat)
-                    // TODO: a lot of this will probably be fuplicated into the non-Dynamic VulkanFramebuffer
                     var outputDesc = description.Outputs;
                     var colorAttDescs = outputDesc.ColorAttachments.AsSpan();
 
-                    var attachments = ArrayPool<VkAttachmentDescription>.Shared.Rent(colorAttDescs.Length + 1); // + 1 for the depth attachment, if we have it
-                    var attachmentRefs = ArrayPool<VkAttachmentReference>.Shared.Rent(colorAttDescs.Length + 1);
+                    var totalAttCount = colorAttDescs.Length;
+                    var rpAttInfo = ArrayPool<RenderPassAttachmentInfo>.Shared.Rent(colorAttDescs.Length + 1); // + 1 for depth
 
-                    var attachmentCount = colorAttDescs.Length;
                     for (var i = 0; i < colorAttDescs.Length; i++)
                     {
-                        var colorDesc = colorAttDescs[i];
-                        attachments[i] = new()
-                        {
-                            format = VkFormats.VdToVkPixelFormat(colorDesc.Format, default),
-                            samples = vkSampleCount,
-                            loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                            storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
-                            stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                            stencilStoreOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
-                            initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED,
-                            finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                        };
-                        attachmentRefs[i] = new()
-                        {
-                            attachment = (uint)i,
-                            layout = VkImageLayout.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                        };
+                        var targetInfo = colorAttDescs[i];
+
+                        rpAttInfo[i] = new(
+                            VkFormats.VdToVkPixelFormat(targetInfo.Format, TextureUsage.RenderTarget), VkSampleCountFlags.VK_SAMPLE_COUNT_1_BIT,
+                            false, FormatHelpers.IsStencilFormat(targetInfo.Format));
                     }
 
-                    var hasDepth = false;
-                    if (outputDesc.DepthAttachment is { } depthAtt)
+                    if (outputDesc.DepthAttachment is { } depthTargetDesc)
                     {
-                        var depthFormat = depthAtt.Format;
-                        var hasStencil = FormatHelpers.IsStencilFormat(depthFormat);
-
-                        attachments[attachmentCount] = new()
-                        {
-                            format = VkFormats.VdToVkPixelFormat(depthFormat, TextureUsage.DepthStencil),
-                            samples = vkSampleCount,
-                            loadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                            storeOp = VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE,
-                            stencilLoadOp = VkAttachmentLoadOp.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                            stencilStoreOp = hasStencil ? VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_STORE : VkAttachmentStoreOp.VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                            initialLayout = VkImageLayout.VK_IMAGE_LAYOUT_UNDEFINED,
-                            finalLayout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                        };
-
-                        attachmentRefs[attachmentCount] = new()
-                        {
-                            attachment = (uint)attachmentCount,
-                            layout = VkImageLayout.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                        };
-
-                        hasDepth = true;
-                        attachmentCount++;
+                        rpAttInfo[colorAttDescs.Length] = new(
+                            VkFormats.VdToVkPixelFormat(depthTargetDesc.Format, TextureUsage.DepthStencil), VkSampleCountFlags.VK_SAMPLE_COUNT_1_BIT,
+                            false, FormatHelpers.IsStencilFormat(depthTargetDesc.Format));
+                        totalAttCount++;
                     }
 
-                    fixed (VkAttachmentDescription* pAttachments = attachments)
-                    fixed (VkAttachmentReference* pAttachmentRefs = attachmentRefs)
-                    {
-                        var subpass = new VkSubpassDescription()
-                        {
-                            pipelineBindPoint = VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            colorAttachmentCount = (uint)colorAttDescs.Length,
-                            pColorAttachments = pAttachmentRefs,
-                        };
+                    // get the render passes for this framebuffer
+                    rpHolder = VulkanRenderPassHolder.GetRenderPassHolder(_gd, new(rpAttInfo.AsMemory(0, totalAttCount), outputDesc.DepthAttachment.HasValue));
 
-                        if (hasDepth)
-                        {
-                            subpass.pDepthStencilAttachment = pAttachmentRefs + colorAttDescs.Length;
-                        }
+                    ArrayPool<RenderPassAttachmentInfo>.Shared.Return(rpAttInfo);
 
-                        var subpassDep = new VkSubpassDependency()
-                        {
-                            srcSubpass = VK_SUBPASS_EXTERNAL,
-                            srcStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                            dstStageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                            dstAccessMask = VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VkAccessFlags.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                        };
-
-                        var renderPassCreateInfo = new VkRenderPassCreateInfo()
-                        {
-                            sType = VkStructureType.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                            attachmentCount = (uint)attachmentCount,
-                            pAttachments = pAttachments,
-                            subpassCount = 1,
-                            pSubpasses = &subpass,
-                            dependencyCount = 1,
-                            pDependencies = &subpassDep,
-                        };
-
-                        VulkanUtil.CheckResult(vkCreateRenderPass(_gd.Device, &renderPassCreateInfo, null, &renderPassTemplate));
-                    }
-
-                    ArrayPool<VkAttachmentDescription>.Shared.Return(attachments);
-                    ArrayPool<VkAttachmentReference>.Shared.Return(attachmentRefs);
-
-                    pipelineCreateInfo.renderPass = renderPassTemplate;
+                    pipelineCreateInfo.renderPass = rpHolder.LoadOpLoad;
                 }
 
                 // Rasterizer State
@@ -1452,10 +1510,7 @@ namespace Veldrid.Vulkan
                     vkDestroyPipelineLayout(_gd.Device, pipelineLayout, null);
                 }
 
-                if (renderPassTemplate != VkRenderPass.NULL)
-                {
-                    vkDestroyRenderPass(_gd.Device, renderPassTemplate, null);
-                }
+                rpHolder?.DecRef();
             }
         }
 

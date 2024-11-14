@@ -82,6 +82,7 @@ namespace Veldrid.Vulkan
             {
                 if (fence != VkFence.NULL)
                 {
+                    vkWaitForFences(_gd.Device, 1, &fence, 1, ulong.MaxValue);
                     vkDestroyFence(_gd.Device, fence, null);
                 }
             }

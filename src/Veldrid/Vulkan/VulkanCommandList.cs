@@ -976,16 +976,16 @@ namespace Veldrid.Vulkan
             }
 
             // then emit the synchronization to the target command buffer
-            EmitQueuedSynchro(cb, _pendingBarriers, ref _pendingImageBarriers, ref _pendingBufferBarriers);
+            EmitQueuedSynchro(cb, _pendingBarriers, inFb: false, ref _pendingImageBarriers, ref _pendingBufferBarriers);
         }
 
         public void EmitQueuedSynchro()
         {
-            EmitQueuedSynchro(_currentCb, _pendingBarriers, ref _pendingImageBarriers, ref _pendingBufferBarriers);
+            EmitQueuedSynchro(_currentCb, _pendingBarriers, inFb: _framebufferRenderPassInstanceActive, ref _pendingImageBarriers, ref _pendingBufferBarriers);
         }
 
         private void EmitQueuedSynchro(VkCommandBuffer cb,
-            List<PendingBarrier> pendingBarriers,
+            List<PendingBarrier> pendingBarriers, bool inFb,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
             if (pendingBarriers.Count == 0)
@@ -999,11 +999,11 @@ namespace Veldrid.Vulkan
 
             if (Device._deviceCreateState.HasSync2Ext)
             {
-                EmitQueuedSynchroSync2(Device, cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
+                EmitQueuedSynchroSync2(Device, cb, pendingBarriers, inFb, ref pendingImageBarriers, ref pendingBufferBarriers);
             }
             else
             {
-                EmitQueuedSynchroVk11(cb, pendingBarriers, ref pendingImageBarriers, ref pendingBufferBarriers);
+                EmitQueuedSynchroVk11(cb, pendingBarriers, inFb, ref pendingImageBarriers, ref pendingBufferBarriers);
             }
         }
 
@@ -1024,7 +1024,7 @@ namespace Veldrid.Vulkan
         }
 
         private static void EmitQueuedSynchroSync2(VulkanGraphicsDevice device, VkCommandBuffer cb,
-            List<PendingBarrier> pendingBarriers,
+            List<PendingBarrier> pendingBarriers, bool inFb,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
             var imgBarriers = ArrayPool<VkImageMemoryBarrier2>.Shared.Rent(pendingImageBarriers);
@@ -1057,7 +1057,7 @@ namespace Veldrid.Vulkan
                                 layerCount = subresource.NumLayers,
                                 levelCount = subresource.NumMips,
                                 aspectMask = GetAspectForTexture(vkTex)
-                            }
+                            },
                         };
                     }
                     break;
@@ -1106,6 +1106,7 @@ namespace Veldrid.Vulkan
                         pBufferMemoryBarriers = pBufBarriers,
                         imageMemoryBarrierCount = (uint)imgIdx,
                         pImageMemoryBarriers = pImgBarriers,
+                        dependencyFlags = inFb ? VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT : 0,
                     };
                     device.vkCmdPipelineBarrier2(cb, &depInfo);
                 }
@@ -1116,7 +1117,7 @@ namespace Veldrid.Vulkan
         }
 
         private void EmitQueuedSynchroVk11(VkCommandBuffer cb,
-            List<PendingBarrier> pendingBarriers,
+            List<PendingBarrier> pendingBarriers, bool inFb,
             ref int pendingImageBarriers, ref int pendingBufferBarriers)
         {
             var imgBarriers = ArrayPool<VkImageMemoryBarrier>.Shared.Rent(pendingImageBarriers);
@@ -1200,7 +1201,8 @@ namespace Veldrid.Vulkan
                     vkCmdPipelineBarrier(cb,
                         srcStageMask,
                         dstStageMask,
-                        0, 0, null,
+                        inFb ?  VkDependencyFlags.VK_DEPENDENCY_BY_REGION_BIT : 0,
+                        0, null,
                         (uint)bufIdx, pBufBarriers,
                         (uint)imgIdx, pImgBarriers);
                 }
@@ -1911,9 +1913,10 @@ namespace Veldrid.Vulkan
 
                 //PushDebugGroupCore($"ClearColorTarget({index})");
 
-                var tex = Util.AssertSubtype<Texture, VulkanTexture>(_currentFramebuffer!.ColorTargets[(int)index].Target);
+                var tgt = _currentFramebuffer!.ColorTargets[(int)index];
+                var tex = Util.AssertSubtype<Texture, VulkanTexture>(tgt.Target);
 
-                if (SyncResource(tex, new()
+                if (SyncResource(tex, new(tgt.ArrayLayer, tgt.MipLevel, 1, 1), new()
                     {
                         BarrierMasks = new()
                         {
@@ -1924,6 +1927,7 @@ namespace Veldrid.Vulkan
                     }))
                 {
                     // a barrier was necessary, flush immediately
+                    // TODO: if we need a barrier here, we MUST exit the current render pass and use the other clear command.
                     EmitQueuedSynchro();
                 }
 
@@ -1975,13 +1979,14 @@ namespace Veldrid.Vulkan
                 var renderableExtent = _currentFramebuffer!.RenderableExtent;
                 if (renderableExtent.width > 0 && renderableExtent.height > 0)
                 {
-                    var tex = Util.AssertSubtype<Texture, VulkanTexture>(_currentFramebuffer!.DepthTarget!.Value.Target);
+                    var tgt = _currentFramebuffer!.DepthTarget!.Value;
+                    var tex = Util.AssertSubtype<Texture, VulkanTexture>(tgt.Target);
 
-                    if (SyncResource(tex, new()
+                    if (SyncResource(tex, new(tgt.ArrayLayer, tgt.MipLevel, 1, 1), new()
                     {
                         BarrierMasks = new()
                         {
-                            // CmdClearAttachments operats as EARLY_FRAGMENT_TESTS and LATE_FRAGMENT_TESTS (for depth and stencil attachments)
+                            // CmdClearAttachments operates as EARLY_FRAGMENT_TESTS and LATE_FRAGMENT_TESTS (for depth and stencil attachments)
                             StageMask = VkPipelineStageFlags.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
                                         | VkPipelineStageFlags.VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                             AccessMask = VkAccessFlags.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -2212,6 +2217,7 @@ namespace Veldrid.Vulkan
                 _depthClearValue, _clearValues, _validClearValues);
             // after we've started a render pass, the clear values are done and we need to make sure to not double-clear
             _validClearValues.AsSpan().Fill(false);
+            _depthClearValue = null;
         }
 
         private bool EnsureNoRenderPass(bool forCreateRenderPass = false)
