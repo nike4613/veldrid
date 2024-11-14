@@ -1506,9 +1506,9 @@ namespace Veldrid.Vulkan
             var srcTex = Util.AssertSubtype<Texture, VulkanTexture>(source);
             var dstTex = Util.AssertSubtype<Texture, VulkanTexture>(destination);
 
-            PushDebugGroupCore($"CopyTexture({srcTex.Name}, {dstTex})");
+            //PushDebugGroupCore($"CopyTexture({srcTex.Name}, {dstTex})");
 
-            //EnsureNoRenderPass();
+            EnsureNoRenderPass();
 
             var srcIsStaging = (srcTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
             var dstIsStaging = (dstTex.Usage & TextureUsage.Staging) == TextureUsage.Staging;
