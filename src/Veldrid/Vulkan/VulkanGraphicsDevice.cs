@@ -34,6 +34,7 @@ namespace Veldrid.Vulkan
 
         private readonly object _fenceCompletionCallbackLock = new();
         private readonly List<FenceCompletionCallbackInfo> _fenceCompletionCallbacks = new();
+        private readonly List<SwapchainOldFenceSemaphoreInfo> _swapchainOldFences = new();
 
         private const uint MinStagingBufferSize = 64;
         private const uint MaxStagingBufferSize = 512;
@@ -457,6 +458,14 @@ namespace Veldrid.Vulkan
             public VulkanCommandList.FenceCompletionCallbackInfo CallbackInfo;
         }
 
+        internal struct SwapchainOldFenceSemaphoreInfo
+        {
+            public VkFence[]? Fences;
+            public VkSemaphore[]? Semaphores;
+            public int NumFences;
+            public int NumSemaphores;
+        }
+
         internal void RegisterFenceCompletionCallback(VkFence fence, in VulkanCommandList.FenceCompletionCallbackInfo callbackInfo)
         {
             lock (_fenceCompletionCallbackLock)
@@ -469,7 +478,36 @@ namespace Veldrid.Vulkan
             }
         }
 
-        internal void CheckFencesForCompletion()
+        internal void RegisterSwapchainOldFences(in SwapchainOldFenceSemaphoreInfo oldFences)
+        {
+            if (oldFences.NumFences == 0)
+            {
+                if (oldFences.Fences is { } fences)
+                {
+                    ArrayPool<VkFence>.Shared.Return(fences, clearArray: true);
+                }
+            }
+            if (oldFences.NumSemaphores == 0)
+            {
+                if (oldFences.Semaphores is { } semaphores)
+                {
+                    ArrayPool<VkSemaphore>.Shared.Return(semaphores, clearArray: true);
+                }
+            }
+
+            if (oldFences.NumFences is 0 && oldFences.NumSemaphores is 0)
+            {
+                // nothing to do, so don't do anything
+                return;
+            }
+
+            lock (_fenceCompletionCallbackLock)
+            {
+                _swapchainOldFences.Add(oldFences);
+            }
+        }
+
+        internal unsafe void CheckFencesForCompletion()
         {
             lock (_fenceCompletionCallbackLock)
             {
@@ -497,6 +535,61 @@ namespace Veldrid.Vulkan
 
                     // NOTE: `callback` is invalidated once the list is modified. Do not read after this point.
                     list.RemoveAt(i);
+                    i -= 1;
+                }
+
+                var list2 = _swapchainOldFences;
+                for (int i = 0; i < list2.Count; i++)
+                {
+                    ref var fences = ref CollectionsMarshal.AsSpan(list2)[i];
+                    VkResult result = VkResult.VK_SUCCESS;
+                    fixed (VkFence* pFences = fences.Fences)
+                    {
+                        if (pFences is not null)
+                        {
+                            result = vkWaitForFences(Device, (uint)fences.NumFences, pFences, 1, 0);
+                        }
+                    }
+
+                    if (result == VkResult.VK_SUCCESS)
+                    {
+                        // fences are complete, clean everything up
+                        if (fences.Fences is { } fenceArr)
+                        {
+                            foreach (var fence in fenceArr)
+                            {
+                                if (fence != VkFence.NULL)
+                                {
+                                    vkDestroyFence(Device, fence, null);
+                                }
+                            }
+                            ArrayPool<VkFence>.Shared.Return(fenceArr, clearArray: true);
+                        }
+
+                        if (fences.Semaphores is { } semArr)
+                        {
+                            foreach (var sem in semArr)
+                            {
+                                if (sem != VkSemaphore.NULL)
+                                {
+                                    vkDestroySemaphore(Device, sem, null);
+                                }
+                            }
+                            ArrayPool<VkSemaphore>.Shared.Return(semArr, clearArray: true);
+                        }
+                    }
+                    else if (result == VkResult.VK_TIMEOUT)
+                    {
+                        // fences are not complete, move on
+                        continue;
+                    }
+                    else
+                    {
+                        // some other error condition, dunno what to do here tho
+                    }
+
+                    // NOTE: `callback` is invalidated once the list is modified. Do not read after this point.
+                    list2.RemoveAt(i);
                     i -= 1;
                 }
             }

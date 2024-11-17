@@ -1,7 +1,7 @@
 ﻿using System;
+using System.Buffers;
 using System.Linq;
 using System.Diagnostics;
-
 using TerraFX.Interop.Vulkan;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
@@ -281,16 +281,27 @@ namespace Veldrid.Vulkan
             _imageCount = imageCount;
 
             // as a last step, we need to set up our fences and semaphores
+            var oldFenceCount = _fences.Length;
+            var oldSemaphoreCount = _semaphores.Length;
             Util.EnsureArrayMinimumSize(ref _fences, imageCount);
             Util.EnsureArrayMinimumSize(ref _semaphores, imageCount + 1);
             _fenceIndex = 0;
 
+            // need to collect an array of the fences and semaphores so we can record them to be destroyed later
+            var fenceArr = ArrayPool<VkFence>.Shared.Rent(oldFenceCount);
+            var semaphoreArr = ArrayPool<VkSemaphore>.Shared.Rent(oldSemaphoreCount);
+            Array.Clear(fenceArr);
+            Array.Clear(semaphoreArr);
+            oldFenceCount = 0;
+            oldSemaphoreCount = 0;
+
+            // TODO: this re-creation is BAD. We need to (somehow or other) force a sync and wait for it before destroying these fences and semaphores.
             for (var i = 0; i < _fences.Length; i++)
             {
                 if (_fences[i] != VkFence.NULL)
                 {
                     // we always want to recreate any fences we have, because we want them to be default-signalled
-                    vkDestroyFence(_gd.Device, _fences[i], null);
+                    fenceArr[oldFenceCount++] = _fences[i];
                     _fences[i] = VkFence.NULL;
                 }
 
@@ -312,7 +323,7 @@ namespace Veldrid.Vulkan
                 if (_semaphores[i] != VkSemaphore.NULL)
                 {
                     // we always want to recreate any semaphores we have, to make sure they aren't signalled when we do our initial acquire
-                    vkDestroySemaphore(_gd.Device, _semaphores[i], null);
+                    semaphoreArr[oldSemaphoreCount++] = _semaphores[i];
                     _semaphores[i] = VkSemaphore.NULL;
                 }
 
@@ -325,6 +336,13 @@ namespace Veldrid.Vulkan
                 }
             }
 
+            _gd.RegisterSwapchainOldFences(new()
+            {
+                Fences = fenceArr,
+                NumFences = oldFenceCount,
+                Semaphores = semaphoreArr,
+                NumSemaphores = oldSemaphoreCount,
+            });
             _framebuffer.SetNewSwapchain(_deviceSwapchain, width, height, surfaceFormat, swapchainCI.imageExtent);
             return true;
         }
