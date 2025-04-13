@@ -3,7 +3,7 @@
 
 dotnet restore src\Veldrid.sln
 
-set UseStableVersions=true
+set UseStableVersions=false
 
 dotnet pack -c Release src\Veldrid.OpenGLBindings\Veldrid.OpenGLBindings.csproj
 dotnet pack -c Release src\Veldrid.MetalBindings\Veldrid.MetalBindings.csproj
