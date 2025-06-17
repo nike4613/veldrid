@@ -131,16 +131,44 @@ namespace Veldrid
             _gd.CheckFencesForCompletion();
         }
 
+        /// <summary>
+        /// Gets the <see cref="VkFormat"/> of the image associated with <paramref name="texture"/>.
+        /// </summary>
+        /// <param name="texture">The texture to get the format of.</param>
+        /// <returns>The <see cref="VkFormat"/> the image associated with <paramref name="texture"/> has.</returns>
         public VkFormat GetVkFormat(Texture texture)
         {
             var vkTexture = Util.AssertSubtype<Texture, VulkanTexture>(texture);
             return vkTexture.VkFormat;
         }
 
+        /// <summary>
+        /// Instructs the backend to poll waiting fences for completion and invoke any callbacks, potentially cleaning up unused resources.
+        /// </summary>
+        /// <remarks>
+        /// This may be valuable in compute-heavy workloads, or in scenarios where a lot of CPU processing
+        /// is necessary per-frame, or where resources are constrained.
+        /// </remarks>
         public void CheckForCommandListCompletions()
         {
             _gd.CheckFencesForCompletion();
         }
+
+        /// <summary>
+        /// Gets <paramref name="swapchain"/>'s preference for using the <c>PRESENT_MODE_FIFO_LATEST_READY</c> presentation mode when in VSync.
+        /// </summary>
+        /// <param name="swapchain">The swapchain to query.</param>
+        /// <returns><see langword="true"/> if the swapchain will use <c>PRESENT_MODE_FIFO_LATEST_READY</c>; <see langword="false"/> otherwise.</returns>
+        public bool GetUseFifoLatestIfAvailable(Swapchain swapchain)
+            => Util.AssertSubtype<Swapchain, VulkanSwapchain>(swapchain).UseFifoLatestIfAvailable;
+
+        /// <summary>
+        /// Sets <paramref name="swapchain"/>'s preference for using the <c>PRESENT_MODE_FIFO_LATEST_READY</c> presentation mode when in VSync.
+        /// </summary>
+        /// <param name="swapchain">The swapchain to query.</param>
+        /// <param name="value"><see langword="true"/> if the swapchain should use <c>PRESENT_MODE_FIFO_LATEST_READY</c> when VSync is enabled; <see langword="false"/> otherwise.</param>
+        public void SetUseFifoLatestIfAvailable(Swapchain swapchain, bool value)
+            => Util.AssertSubtype<Swapchain, VulkanSwapchain>(swapchain).UseFifoLatestIfAvailable = value;
 
         private unsafe ReadOnlyCollection<ExtensionProperties> EnumerateDeviceExtensions()
         {

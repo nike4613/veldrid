@@ -10,6 +10,7 @@ using System.Threading;
 using TerraFX.Interop.Vulkan;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Veldrid.Vulkan
 {
@@ -43,6 +44,8 @@ namespace Veldrid.Vulkan
 
         private readonly Dictionary<MappableResource, ResourceMapping> _mappedResources = new();
         private readonly object _mappedResourcesLock = new();
+
+        private readonly Lazy<BackendInfoVulkan> _lazyBackendInfo;
 
 #if DEBUG
         internal readonly ConcurrentDictionary<VkImage, WeakReference<VulkanTexture>> NativeToManagedImages = new();
@@ -217,6 +220,8 @@ namespace Veldrid.Vulkan
 
                 EagerlyAllocateSomeResources();
                 PostDeviceCreated();
+
+                _lazyBackendInfo = new(() => new(this), LazyThreadSafetyMode.ExecutionAndPublication);
             }
             catch
             {
@@ -385,6 +390,12 @@ namespace Veldrid.Vulkan
 
                 VulkanUtil.CheckResult(vkDebugMarkerSetObjectNameEXT(Device, &nameInfo));
             }
+        }
+
+        public override bool GetVulkanInfo([MaybeNullWhen(false)] out BackendInfoVulkan info)
+        {
+            info = _lazyBackendInfo.Value;
+            return true;
         }
 
         internal unsafe VkCommandPool CreateCommandPool(bool transient)

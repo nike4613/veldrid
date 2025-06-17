@@ -23,11 +23,15 @@ namespace Veldrid.Vulkan
         private uint _fenceIndex;
         private uint _currentImageIndex;
         private uint _imageCount;
+        private int _presentTargetQueueLength;
 
         private readonly SwapchainSource _swapchainSource;
         private readonly bool _colorSrgb;
         private bool _syncToVBlank;
         private bool? _newSyncToVBlank;
+
+        private bool _useFifoLatestIfAvailable;
+        private bool? _newUseFifoLatestIfAvailable;
 
         private string? _name;
         public ResourceRefCount RefCount { get; }
@@ -82,7 +86,7 @@ namespace Veldrid.Vulkan
             {
                 if (fence != VkFence.NULL)
                 {
-                    vkWaitForFences(_gd.Device, 1, &fence, 1, ulong.MaxValue);
+                    //vkWaitForFences(_gd.Device, 1, &fence, 1, ulong.MaxValue);
                     vkDestroyFence(_gd.Device, fence, null);
                 }
             }
@@ -123,6 +127,18 @@ namespace Veldrid.Vulkan
                 if (_syncToVBlank != value)
                 {
                     _newSyncToVBlank = value;
+                }
+            }
+        }
+
+        public bool UseFifoLatestIfAvailable
+        {
+            get => _newUseFifoLatestIfAvailable ?? _useFifoLatestIfAvailable;
+            set
+            {
+                if (_useFifoLatestIfAvailable != value)
+                {
+                    _newUseFifoLatestIfAvailable = value;
                 }
             }
         }
@@ -198,10 +214,24 @@ namespace Veldrid.Vulkan
                 VulkanUtil.CheckResult(vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, _surface, &presentModeCount, presentModesPtr));
             }
 
+            uint maxImageCount = surfaceCapabilities.maxImageCount == 0 ? uint.MaxValue : surfaceCapabilities.maxImageCount;
+            // TODO: it would maybe be a good idea to enable this to be configurable?
+            uint imageCount = Math.Min(maxImageCount, surfaceCapabilities.minImageCount + 1);
+
             VkPresentModeKHR presentMode = VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
+            _presentTargetQueueLength = 0;
 
             if (_syncToVBlank)
             {
+                const VkPresentModeKHR VK_PRESENT_MODE_FIFO_LATEST_READY_EXT = (VkPresentModeKHR)1000361000;
+
+                // TODO: figure out how to throttle sanely with FIFO_LATEST_READY
+                if (_useFifoLatestIfAvailable && _gd._deviceCreateState.HasFifoLatestReady && presentModes.Contains(VK_PRESENT_MODE_FIFO_LATEST_READY_EXT))
+                {
+                    presentMode = VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
+                    _presentTargetQueueLength = 1;
+                }
+                else
                 if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_FIFO_RELAXED_KHR))
                 {
                     presentMode = VkPresentModeKHR.VK_PRESENT_MODE_FIFO_RELAXED_KHR;
@@ -212,16 +242,14 @@ namespace Veldrid.Vulkan
                 if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR))
                 {
                     presentMode = VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR;
+                    _presentTargetQueueLength = (int)imageCount;
                 }
                 else if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR))
                 {
                     presentMode = VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR;
+                    _presentTargetQueueLength = (int)imageCount;
                 }
             }
-
-            uint maxImageCount = surfaceCapabilities.maxImageCount == 0 ? uint.MaxValue : surfaceCapabilities.maxImageCount;
-            // TODO: it would maybe be a good idea to enable this to be configurable?
-            uint imageCount = Math.Min(maxImageCount, surfaceCapabilities.minImageCount + 1);
 
             uint clampedWidth = Util.Clamp(width, surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
             uint clampedHeight = Util.Clamp(height, surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
@@ -295,7 +323,6 @@ namespace Veldrid.Vulkan
             oldFenceCount = 0;
             oldSemaphoreCount = 0;
 
-            // TODO: this re-creation is BAD. We need to (somehow or other) force a sync and wait for it before destroying these fences and semaphores.
             for (var i = 0; i < _fences.Length; i++)
             {
                 if (_fences[i] != VkFence.NULL)
@@ -357,8 +384,21 @@ namespace Veldrid.Vulkan
                 return false;
             }
 
+            if (_newUseFifoLatestIfAvailable != null)
+            {
+                _useFifoLatestIfAvailable = _newUseFifoLatestIfAvailable.Value;
+                _newUseFifoLatestIfAvailable = null;
+                RecreateAndReacquire(_framebuffer.Width, _framebuffer.Height);
+                return false;
+            }
+
+            // first, wait for the fence corresponding to the image slot (not to be confused with the image index!) that we'll acquire
+            // _presentTargetQueueLength determines how many frames we want to keep in the queue at a time, so how far back we should look before waiting.
+            // For standard FIFO-like present (a.k.a. vsync), this is 1. For PRESENT_LATEST, it's 2. For non-vsync, it's the image count.
+            var fenceIndex = (_fenceIndex + (uint)_fences.Length - _presentTargetQueueLength) % (uint)_fences.Length;
             // first, wait for the i - N'th fence (which mod N is just the current fence, and the one we will be passing to acquire)
-            var waitFence = _fences[_fenceIndex];
+            var waitFence = _fences[fenceIndex];
+
             _ = vkWaitForFences(_gd.Device, 1, &waitFence, 1, ulong.MaxValue);
             _ = vkResetFences(_gd.Device, 1, &waitFence);
 

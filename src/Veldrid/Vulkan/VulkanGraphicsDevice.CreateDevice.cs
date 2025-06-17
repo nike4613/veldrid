@@ -6,6 +6,7 @@ using TerraFX.Interop.Vulkan;
 using StackListNI = Veldrid.Vulkan.StackList<System.IntPtr>;
 using static TerraFX.Interop.Vulkan.VkStructureType;
 using static TerraFX.Interop.Vulkan.Vulkan;
+using Veldrid.Vulkan.Interop;
 
 namespace Veldrid.Vulkan
 {
@@ -50,6 +51,7 @@ namespace Veldrid.Vulkan
             public bool HasDriverPropertiesExt;
             public bool HasDynamicRendering;
             public bool HasSync2Ext;
+            public bool HasFifoLatestReady;
         }
 
         public static VulkanGraphicsDevice CreateDevice(GraphicsDeviceOptions gdOpts, VulkanDeviceOptions vkOpts, SwapchainDescription? swapchainDesc)
@@ -318,6 +320,10 @@ namespace Veldrid.Vulkan
                             dcs.HasSync2Ext = true;
                             goto EnableExtension;
 
+                        case "VK_EXT_present_mode_fifo_latest_ready":
+                            dcs.HasFifoLatestReady = true;
+                            goto EnableExtension;
+
                         default:
                             if (requiredDeviceExtensions.Remove(name))
                             {
@@ -393,6 +399,18 @@ namespace Veldrid.Vulkan
                         };
 
                         deviceCreateInfo.pNext = &sync2Features;
+                    }
+
+                    if (dcs.HasFifoLatestReady)
+                    {
+                        var fifoLatestReady = new VkPhysicalDevicePresentModeFifoLatestReadyFeaturesEXT()
+                        {
+                            sType = VkPhysicalDevicePresentModeFifoLatestReadyFeaturesEXT.SType,
+                            pNext = deviceCreateInfo.pNext,
+                            presentModeFifoLatestReady = (VkBool32)true,
+                        };
+
+                        deviceCreateInfo.pNext = &fifoLatestReady;
                     }
 
                     VulkanUtil.CheckResult(vkCreateDevice(dcs.PhysicalDevice, &deviceCreateInfo, null, &device));
