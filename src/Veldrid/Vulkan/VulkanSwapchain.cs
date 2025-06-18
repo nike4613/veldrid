@@ -385,7 +385,6 @@ namespace Veldrid.Vulkan
                 return false;
             }
 
-
             // then, pick up the semaphore we're going to use
             // we always grab the "extra" one, and we'll swap it into place in the array once we know the image we've acquired
             // The semaphore we pass in to vkAcquireNextImage MUST be unsignaled (so waited-upon), which we guarantee at the callsites
@@ -420,10 +419,9 @@ namespace Veldrid.Vulkan
                 CreateSwapchain(_framebuffer.Width, _framebuffer.Height);
                 return false;
             }
-            else if (result != VkResult.VK_SUCCESS)
+            else
             {
-                VulkanUtil.ThrowResult(result);
-                throw new VeldridException("Could not acquire next image from the Vulkan swapchain.");
+                VulkanUtil.CheckResult(result);
             }
 
             return true;
