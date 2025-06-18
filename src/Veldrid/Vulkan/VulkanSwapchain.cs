@@ -20,10 +20,8 @@ namespace Veldrid.Vulkan
 
         private VkSemaphore[] _semaphores = [];
         private VkFence[] _fences = [];
-        private uint _fenceIndex;
         private uint _currentImageIndex;
         private uint _imageCount;
-        private int _presentTargetQueueLength;
 
         private readonly SwapchainSource _swapchainSource;
         private readonly bool _colorSrgb;
@@ -219,7 +217,6 @@ namespace Veldrid.Vulkan
             uint imageCount = Math.Min(maxImageCount, surfaceCapabilities.minImageCount + 1);
 
             VkPresentModeKHR presentMode = VkPresentModeKHR.VK_PRESENT_MODE_FIFO_KHR;
-            _presentTargetQueueLength = 0;
 
             if (_syncToVBlank)
             {
@@ -229,7 +226,6 @@ namespace Veldrid.Vulkan
                 if (_useFifoLatestIfAvailable && _gd._deviceCreateState.HasFifoLatestReady && presentModes.Contains(VK_PRESENT_MODE_FIFO_LATEST_READY_EXT))
                 {
                     presentMode = VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
-                    _presentTargetQueueLength = 1;
                 }
                 else
                 if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_FIFO_RELAXED_KHR))
@@ -242,12 +238,10 @@ namespace Veldrid.Vulkan
                 if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR))
                 {
                     presentMode = VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR;
-                    _presentTargetQueueLength = (int)imageCount;
                 }
                 else if (presentModes.Contains(VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR))
                 {
                     presentMode = VkPresentModeKHR.VK_PRESENT_MODE_IMMEDIATE_KHR;
-                    _presentTargetQueueLength = (int)imageCount;
                 }
             }
 
@@ -311,9 +305,8 @@ namespace Veldrid.Vulkan
             // as a last step, we need to set up our fences and semaphores
             var oldFenceCount = _fences.Length;
             var oldSemaphoreCount = _semaphores.Length;
-            Util.EnsureArrayMinimumSize(ref _fences, imageCount);
+            Util.EnsureArrayMinimumSize(ref _fences, imageCount + 1);
             Util.EnsureArrayMinimumSize(ref _semaphores, imageCount + 1);
-            _fenceIndex = 0;
 
             // need to collect an array of the fences and semaphores so we can record them to be destroyed later
             var fenceArr = ArrayPool<VkFence>.Shared.Rent(oldFenceCount);
@@ -332,7 +325,7 @@ namespace Veldrid.Vulkan
                     _fences[i] = VkFence.NULL;
                 }
 
-                if (i < imageCount)
+                if (i < imageCount + 1)
                 {
                     var fenceCi = new VkFenceCreateInfo()
                     {
@@ -392,15 +385,6 @@ namespace Veldrid.Vulkan
                 return false;
             }
 
-            // first, wait for the fence corresponding to the image slot (not to be confused with the image index!) that we'll acquire
-            // _presentTargetQueueLength determines how many frames we want to keep in the queue at a time, so how far back we should look before waiting.
-            // For standard FIFO-like present (a.k.a. vsync), this is 1. For PRESENT_LATEST, it's 2. For non-vsync, it's the image count.
-            var fenceIndex = (_fenceIndex + (uint)_fences.Length - _presentTargetQueueLength) % (uint)_fences.Length;
-            // first, wait for the i - N'th fence (which mod N is just the current fence, and the one we will be passing to acquire)
-            var waitFence = _fences[fenceIndex];
-
-            _ = vkWaitForFences(_gd.Device, 1, &waitFence, 1, ulong.MaxValue);
-            _ = vkResetFences(_gd.Device, 1, &waitFence);
 
             // then, pick up the semaphore we're going to use
             // we always grab the "extra" one, and we'll swap it into place in the array once we know the image we've acquired
@@ -408,6 +392,11 @@ namespace Veldrid.Vulkan
             // of AcquireNextImage. (Either because we *just* recreated the swapchain, or because we are doing a presentation, and thus
             // have a command list that we can force to wait on it.)
             var semaphore = _semaphores[_imageCount];
+            // we select fences in the same way
+            var waitFence = _fences[_imageCount];
+
+            _ = vkWaitForFences(_gd.Device, 1, &waitFence, 1, ulong.MaxValue);
+            _ = vkResetFences(_gd.Device, 1, &waitFence);
 
             uint imageIndex = _currentImageIndex;
             VkResult result = vkAcquireNextImageKHR(
@@ -422,8 +411,9 @@ namespace Veldrid.Vulkan
             // swap this semaphore into position
             _semaphores[_imageCount] = _semaphores[imageIndex];
             _semaphores[imageIndex] = semaphore;
-            // and move our fence index forward
-            _fenceIndex = (_fenceIndex + 1) % _imageCount;
+            // swap the fence into position
+            _fences[_imageCount] = _fences[imageIndex];
+            _fences[imageIndex] = waitFence;
 
             if (result is VkResult.VK_ERROR_OUT_OF_DATE_KHR or VkResult.VK_SUBOPTIMAL_KHR)
             {
@@ -432,6 +422,7 @@ namespace Veldrid.Vulkan
             }
             else if (result != VkResult.VK_SUCCESS)
             {
+                VulkanUtil.ThrowResult(result);
                 throw new VeldridException("Could not acquire next image from the Vulkan swapchain.");
             }
 
