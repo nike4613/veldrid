@@ -1301,8 +1301,7 @@ namespace Veldrid.Vulkan
                 var presentResult = vkQueuePresentKHR(vkSwapchain.PresentQueue, &presentInfo);
                 
                 if (presentResult
-                    is not VkResult.VK_SUCCESS
-                    and not VkResult.VK_SUBOPTIMAL_KHR
+                    is not VkResult.VK_SUBOPTIMAL_KHR
                     and not VkResult.VK_ERROR_OUT_OF_DATE_KHR)
                 {
                     VulkanUtil.ThrowResult(presentResult);

@@ -159,10 +159,22 @@ namespace Veldrid.Vulkan
                 return false;
             }
 
+            /*
             if (_deviceSwapchain != VkSwapchainKHR.NULL)
             {
-                _gd.WaitForIdle();
+                if (_fences.Length > 0)
+                {
+                    fixed (VkFence* pFences = _fences)
+                    {
+                        vkWaitForFences(_gd.Device, _imageCount + 1, pFences, 1, ulong.MaxValue);
+                    }
+                }
+                else
+                {
+                    _gd.WaitForIdle();
+                }
             }
+            */
 
             _currentImageIndex = 0;
             var surfaceFormatCount = 0u;

@@ -58,9 +58,9 @@ namespace Veldrid.NeoDemo
                 WindowWidth = 960,
                 WindowHeight = 540,
                 WindowInitialState = WindowState.Normal,
-                WindowTitle = "Veldrid NeoDemo"
+                WindowTitle = "Veldrid NeoDemo",
             };
-            GraphicsDeviceOptions gdOptions = new(false, null, false, ResourceBindingModel.Improved, true, true, _colorSrgb);
+            GraphicsDeviceOptions gdOptions = new(true, null, true, ResourceBindingModel.Improved, true, true, _colorSrgb);
 #if DEBUG
             gdOptions.Debug = true;
 #endif
